@@ -29,6 +29,8 @@ return [
     |
     */
 
+
+   
     'connections' => [
 
         'sqlite' => [
@@ -41,6 +43,12 @@ return [
             'journal_mode' => null,
             'synchronous' => null,
             'transaction_mode' => 'DEFERRED',
+        ],
+
+        'mongodb' => [
+        'driver' => 'mongodb',
+        'dsn' => env('MONGO_URI'),
+        'database' => env('MONGO_DATABASE', 'kittyparty'),
         ],
 
         'mysql' => [
