@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
 use MongoDB\BSON\ObjectId;
+use MongoDB\Model\BSONDocument;
 
 class MongoEconomyService
 {
@@ -286,4 +287,40 @@ class MongoEconomyService
             'idempotent' => false,
         ];
     }
+
+public function getUserBasicByMongoId(string $mongoUserId): ?array
+{
+    try {
+        if (!preg_match('/^[a-f\d]{24}$/i', $mongoUserId)) {
+            return null;
+        }
+
+        $doc = $this->users()->findOne(
+            ['_id' => new ObjectId($mongoUserId)],
+            [
+                'projection' => [
+                    'FullName' => 1,
+                    'Username' => 1,
+                ],
+            ]
+        );
+
+        if (!$doc) {
+            return null;
+        }
+
+        // normalize BSONDocument → array
+        if ($doc instanceof BSONDocument) {
+            $doc = $doc->getArrayCopy();
+        }
+
+        return [
+            'full_name' => $doc['FullName'] ?? null,
+            'username'  => $doc['Username'] ?? null,
+        ];
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
 }
