@@ -10,6 +10,7 @@ use App\Models\OfflineRecharge;
 use App\Models\Wallet;
 use App\Services\MongoEconomyService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -21,66 +22,118 @@ class OfflineRechargeController extends Controller
      * GET /agent/recharges/list
      * Returns paginated JSON rows for the Agent Recharges page.
      */
-    public function list(): JsonResponse
-    {
-        $agentId = $this->resolveAgentId();
+public function list(Request $request, MongoEconomyService $mongoEconomy): JsonResponse
+{
+    $agentId = $this->resolveAgentId();
 
-        $q = trim((string) request('q', ''));
-        $status = trim((string) request('status', ''));
-        $perPage = (int) request('per_page', 15);
-        $perPage = max(5, min(100, $perPage));
+    $validated = $request->validate([
+        'q'        => ['nullable', 'string', 'max:120'],
+        'status'   => ['nullable', 'string', 'max:50'],
+        'per_page' => ['nullable', 'integer', 'min:5', 'max:100'],
+    ]);
 
-        $query = OfflineRecharge::query();
+    $q        = trim((string) ($validated['q'] ?? ''));
+    $status   = trim((string) ($validated['status'] ?? ''));
+    $perPage  = (int) ($validated['per_page'] ?? 15);
 
-        // agent scoping
-        if (Schema::hasColumn('offline_recharges', 'agent_id')) {
-            $query->where('agent_id', $agentId);
-        }
+    /* ---------------- BASE QUERY ---------------- */
 
-        if ($q !== '') {
-            $query->where(function ($sub) use ($q) {
-                foreach (['mongo_user_id', 'reference', 'method', 'idempotency_key', 'mobile_txn_ref'] as $col) {
-                    if (Schema::hasColumn('offline_recharges', $col)) {
-                        $sub->orWhere($col, 'like', '%' . $q . '%');
-                    }
-                }
-                if (ctype_digit($q) && Schema::hasColumn('offline_recharges', 'id')) {
-                    $sub->orWhere('id', (int) $q);
-                }
-            });
-        }
+    $query = OfflineRecharge::query();
 
-        if ($status !== '' && Schema::hasColumn('offline_recharges', 'status')) {
-            $query->where('status', $status);
-        }
-
-        $query->orderByDesc('id');
-
-        $rows = $query->paginate($perPage)->through(function (OfflineRecharge $r) {
-            return [
-                'id' => $r->id,
-                'mongo_user_id' => $r->mongo_user_id,
-                'coins_amount' => (int) $r->coins_amount,
-                'amount_usd_cents' => (int) $r->amount_usd_cents,
-                'method' => $r->method,
-                'reference' => $r->reference,
-                'status' => $r->status,
-                'idempotency_key' => $r->idempotency_key,
-                'mobile_txn_ref' => $r->mobile_txn_ref,
-                'proof_url' => $r->proof_url,
-                'created_at' => optional($r->created_at)->toISOString(),
-            ];
-        });
-
-        return response()->json([
-            'filters' => [
-                'q' => $q,
-                'status' => $status,
-                'per_page' => $perPage,
-            ],
-            'rows' => $rows,
-        ]);
+    // agent scoping
+    if (Schema::hasColumn('offline_recharges', 'agent_id')) {
+        $query->where('agent_id', $agentId);
     }
+
+    /* ---------------- FILTERS ---------------- */
+
+    if ($q !== '') {
+        $query->where(function ($sub) use ($q) {
+            foreach ([
+                'mongo_user_id',
+                'reference',
+                'method',
+                'idempotency_key',
+                'mobile_txn_ref',
+            ] as $col) {
+                if (Schema::hasColumn('offline_recharges', $col)) {
+                    $sub->orWhere($col, 'like', "%{$q}%");
+                }
+            }
+
+            if (ctype_digit($q) && Schema::hasColumn('offline_recharges', 'id')) {
+                $sub->orWhere('id', (int) $q);
+            }
+        });
+    }
+
+    if ($status !== '' && Schema::hasColumn('offline_recharges', 'status')) {
+        $query->where('status', $status);
+    }
+
+    $query->orderByDesc('id');
+
+    /* ---------------- PAGINATION ---------------- */
+
+    $paginated = $query->paginate($perPage);
+
+    /* ---------------- COLLECT UNIQUE MONGO IDS ---------------- */
+
+    $mongoIds = collect($paginated->items())
+        ->pluck('mongo_user_id')
+        ->filter()
+        ->unique()
+        ->values();
+
+    /* ---------------- FETCH MONGO USERS ---------------- */
+
+    $mongoUsersById = [];
+
+    foreach ($mongoIds as $mongoId) {
+        $userDoc = $mongoEconomy->getUserBasicByMongoId($mongoId);
+
+        if ($userDoc) {
+            $mongoUsersById[$mongoId] = [
+                'full_name' => $userDoc['full_name'] ?? null,
+                'username'  => $userDoc['username'] ?? null,
+            ];
+        }
+    }
+
+    /* ---------------- ENRICH ROWS ---------------- */
+
+    $rows = collect($paginated->items())->map(function (OfflineRecharge $r) use ($mongoUsersById) {
+        return [
+            'id'               => $r->id,
+            'mongo_user_id'    => $r->mongo_user_id,
+            'player'           => $mongoUsersById[$r->mongo_user_id] ?? null,
+
+            'coins_amount'     => (int) $r->coins_amount,
+            'amount_usd_cents' => (int) $r->amount_usd_cents,
+            'method'           => $r->method,
+            'reference'        => $r->reference,
+            'status'           => $r->status,
+
+            'idempotency_key'  => $r->idempotency_key,
+            'mobile_txn_ref'   => $r->mobile_txn_ref,
+            'proof_url'        => $r->proof_url,
+
+            'created_at'       => optional($r->created_at)->toISOString(),
+        ];
+    });
+
+    /* ---------------- RESPONSE ---------------- */
+
+    return response()->json([
+        'data' => [
+            'current_page' => $paginated->currentPage(),
+            'per_page'     => $paginated->perPage(),
+            'total'        => $paginated->total(),
+            'last_page'    => $paginated->lastPage(),
+            'data'         => $rows,
+        ],
+    ]);
+}
 
     /**
      * POST /agent/recharges
