@@ -38,3 +38,5 @@ Route::middleware(['auth', 'verified'])->group(function () {
     });
 
 });
+// Module 5 - Agent Withdrawals routes
+require __DIR__ . '/module5_agent_withdrawals.php';

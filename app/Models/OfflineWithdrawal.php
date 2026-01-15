@@ -2,39 +2,32 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class OfflineWithdrawal extends Model
 {
-    use HasFactory;
+    public const STATUS_PROCESSING = 'processing';
+    public const STATUS_SUCCESSFUL = 'successful';
+    public const STATUS_FAILED = 'failed';
 
     protected $fillable = [
-        'agent_id',
+        'agent_user_id',
         'mongo_user_id',
-        'amount_usd_cents',
-        'diamonds_debited',
-        'channel',
-        'payout_account_ref',
-        'country',
+        'diamonds_amount',
+        'payout_cents',
+        'currency',
+        'payout_method',
         'reference',
+        'notes',
         'status',
-        'mobile_txn_ref',
         'idempotency_key',
-        'proof_url',
-        'meta_json',
+        'mongo_txn_ref',
+        'error_payload',
     ];
 
     protected $casts = [
-        'agent_id' => 'integer',
-        'amount_usd_cents' => 'integer',
-        'diamonds_debited' => 'integer',
-        'meta_json' => 'array',
+        'diamonds_amount' => 'integer',
+        'payout_cents' => 'integer',
+        'error_payload' => 'array',
     ];
-
-    public function agent(): BelongsTo
-    {
-        return $this->belongsTo(Agent::class);
-    }
 }

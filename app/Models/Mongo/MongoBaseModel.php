@@ -3,19 +3,28 @@
 namespace App\Models\Mongo;
 
 use Illuminate\Database\Eloquent\Model as EloquentModel;
+use MongoDB\Laravel\Eloquent\DocumentModel;
 
 /**
- * Supports either MongoDB Laravel package (MongoDB\Laravel\Eloquent\Model)
- * or Jenssegers\Mongodb\Eloquent\Model (older).
+ * Base Mongo Eloquent model for mongodb/laravel-mongodb.
+ *
+ * IMPORTANT:
+ * - This MUST use DocumentModel trait to route queries to MongoDB driver.
+ * - Without DocumentModel, Eloquent will behave like SQL (PDO) and you get
+ *   "Call to a member function prepare() on null".
  */
-class MongoBaseModel extends EloquentModel
+abstract class MongoBaseModel extends EloquentModel
 {
+    use DocumentModel;
+
     protected $connection = 'mongodb';
 
-    public function __construct(array $attributes = [])
-    {
-        // If a Mongo Eloquent base model exists, we rebind the parent class at runtime by composition isn't possible.
-        // This class is a simple fallback for projects that still interact via DB::connection('mongodb') in services.
-        parent::__construct($attributes);
-    }
+    
+    // Mongo collections don't use incremental ints by default
+    public $incrementing = false;
+
+    // _id is stored as ObjectId; package handles it
+    protected $keyType = 'string';
+
+    protected $guarded = [];
 }

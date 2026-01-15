@@ -3,204 +3,287 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
-use MongoDB\Client as MongoClient;
 use MongoDB\BSON\ObjectId;
-use MongoDB\BSON\UTCDateTime;
 
 class MongoEconomyService
 {
-    private bool $useLaravelConnection = false;
+    /**
+     * IMPORTANT:
+     * This service uses the native MongoDB connection from mongodb/laravel-mongodb:
+     * DB::connection('mongodb')->getDatabase()
+     *
+     * Collections used:
+     * - users
+     * - transactions
+     */
 
-    private string $uri;
-    private string $dbName;
-    private string $usersCollection;
-    private string $transactionsCollection;
-
-    public function __construct()
+    private function db(): \MongoDB\Database
     {
-        // Prefer the already-configured Laravel mongodb connection (matches what you tested in tinker)
-        try {
-            DB::connection('mongodb')->getClient();
-            $this->useLaravelConnection = true;
-        } catch (\Throwable $e) {
-            $this->useLaravelConnection = false;
+        return DB::connection('mongodb')->getDatabase();
+    }
+
+    private function users(): \MongoDB\Collection
+    {
+        // keep these as your existing collection names in Mongo
+        return $this->db()->selectCollection('users');
+    }
+
+    private function transactions(): \MongoDB\Collection
+    {
+        return $this->db()->selectCollection('transactions');
+    }
+
+    private function isValidObjectId(string $id): bool
+    {
+        return (bool) preg_match('/^[a-f0-9]{24}$/i', $id);
+    }
+
+    private function toObjectId(string $id): ObjectId
+    {
+        if (!$this->isValidObjectId($id)) {
+            throw new \InvalidArgumentException('Invalid mongo_user_id (ObjectId expected).');
         }
-
-        $this->uri = (string) (config('database.connections.mongodb.dsn')
-            ?: config('database.connections.mongodb.uri')
-            ?: config('services.mongo.uri')
-            ?: env('MONGO_URI', ''));
-
-        // Prefer Laravel connection config; fallback to env
-        $this->dbName = (string) (config('database.connections.mongodb.database')
-            ?: config('services.mongo.db')
-            ?: config('services.mongo.database')
-            ?: env('MONGO_DB', '')
-            ?: env('MONGO_DATABASE', ''));
-
-        $this->usersCollection = (string) (config('services.mongo.users_collection') ?: env('MONGO_USERS_COLLECTION', 'users'));
-        $this->transactionsCollection = (string) (config('services.mongo.transactions_collection') ?: env('MONGO_TRANSACTIONS_COLLECTION', 'transactions'));
-
-        if ($this->dbName === '') {
-            throw new \RuntimeException('Mongo configuration missing. Set database for mongodb connection or set MONGO_DB/MONGO_DATABASE.');
-        }
-        if (!$this->useLaravelConnection && $this->uri === '') {
-            throw new \RuntimeException('Mongo configuration missing. Set mongodb connection or set MONGO_URI.');
-        }
+        return new ObjectId($id);
     }
 
     /**
-     * Credits coins to a Mongo user and writes a transaction doc (idempotent by transactionRef).
+     * Resolve a user ObjectId by UserIdentification (string or int) in Mongo users collection.
+     * Returns: ['mongo_user_id' => '...', 'user' => <projection array>] or null
+     */
+    public function resolveMongoUserIdByUserIdentification(string|int $userIdentification): ?array
+    {
+        $uidStr = (string) $userIdentification;
+
+        $doc = $this->users()->findOne(
+            [
+                '$or' => [
+                    ['UserIdentification' => $uidStr],
+                    ['UserIdentification' => (int) $uidStr],
+                    ['userIdentification' => $uidStr],
+                    ['userIdentification' => (int) $uidStr],
+                ],
+            ],
+            [
+                'projection' => [
+                    '_id' => 1,
+                    'UserIdentification' => 1,
+                    'userIdentification' => 1,
+                    'Diamonds' => 1,
+                    'Coins' => 1,
+                    'Email' => 1,
+                    'Username' => 1,
+                ],
+            ]
+        );
+
+        if (!$doc) return null;
+
+        $arr = (array) $doc;
+        $oid = $arr['_id'] ?? null;
+
+        if (!$oid instanceof ObjectId) return null;
+
+        return [
+            'mongo_user_id' => (string) $oid,
+            'user' => [
+                '_id' => (string) $oid,
+                'UserIdentification' => $arr['UserIdentification'] ?? ($arr['userIdentification'] ?? null),
+                'Diamonds' => isset($arr['Diamonds']) ? (int) $arr['Diamonds'] : null,
+                'Coins' => isset($arr['Coins']) ? (int) $arr['Coins'] : null,
+                'Email' => $arr['Email'] ?? null,
+                'Username' => $arr['Username'] ?? null,
+            ],
+        ];
+    }
+
+    /**
+     * Idempotent debit diamonds:
+     * - checks transactions.transactionRef == $idempotencyKey first
+     * - inserts a pending txn doc
+     * - atomically decrements users.Diamonds if >= amount
+     * - marks txn successful/failed
+     */
+    public function debitDiamonds(string $mongoUserId, int $diamonds, string $idempotencyKey, array $meta = []): array
+    {
+        if ($diamonds <= 0) {
+            return [
+                'transactionRef' => $idempotencyKey,
+                'status' => 'successful',
+                'idempotent' => true,
+                'note' => 'No-op debit (diamonds <= 0)',
+            ];
+        }
+
+        // (1) idempotency check
+        $existing = $this->transactions()->findOne(
+            ['transactionRef' => $idempotencyKey],
+            ['projection' => ['_id' => 1, 'transactionRef' => 1, 'status' => 1]]
+        );
+
+        if ($existing) {
+            $ex = (array) $existing;
+            return [
+                'transactionRef' => $ex['transactionRef'] ?? $idempotencyKey,
+                'status' => $ex['status'] ?? 'successful',
+                'id' => isset($ex['_id']) ? (string) $ex['_id'] : null,
+                'idempotent' => true,
+            ];
+        }
+
+        $oid = $this->toObjectId($mongoUserId);
+
+        // (2) create pending transaction
+        $insert = $this->transactions()->insertOne([
+            'transactionRef' => $idempotencyKey,
+            'userId' => $oid,
+            'status' => 'pending',
+            'diamondsDebited' => (int) $diamonds,
+            'source' => $meta['source'] ?? 'offline_agent_withdrawal',
+            'meta' => $meta,
+            'createdAt' => now()->toDateTimeString(),
+            'updatedAt' => now()->toDateTimeString(),
+        ]);
+
+        $txnId = $insert->getInsertedId();
+
+        // (3) atomic debit: only if Diamonds >= amount
+        $res = $this->users()->updateOne(
+            ['_id' => $oid, 'Diamonds' => ['$gte' => (int) $diamonds]],
+            ['$inc' => ['Diamonds' => -1 * (int) $diamonds]]
+        );
+
+        if ((int) $res->getModifiedCount() <= 0) {
+            // mark failed
+            $this->transactions()->updateOne(
+                ['_id' => $txnId],
+                [
+                    '$set' => [
+                        'status' => 'failed',
+                        'error' => ['message' => 'Insufficient diamonds or user not found'],
+                        'updatedAt' => now()->toDateTimeString(),
+                    ],
+                ]
+            );
+
+            throw new \RuntimeException('Insufficient diamonds or user not found.');
+        }
+
+        // mark successful
+        $this->transactions()->updateOne(
+            ['_id' => $txnId],
+            [
+                '$set' => [
+                    'status' => 'successful',
+                    'updatedAt' => now()->toDateTimeString(),
+                ],
+            ]
+        );
+
+        return [
+            'transactionRef' => $idempotencyKey,
+            'status' => 'successful',
+            'id' => (string) $txnId,
+            'idempotent' => false,
+        ];
+    }
+
+    /**
+     * Idempotent credit coins using transactions.transactionRef.
+     * - increments users.Coins
      *
-     * Expected payload:
-     * - mongo_user_id (24-char hex)
-     * - coins_amount (int)
-     * - idempotency_key (string)
-     * - source (string)
-     * - meta (array)
+     * Signature updated to match your 2nd file usage pattern (payload array),
+     * while keeping the NEW logic/connection style.
      */
     public function creditCoins(array $payload): array
     {
-        $mongoUserId = (string) $payload['mongo_user_id'];
-        $coinsAmount = (int) $payload['coins_amount'];
-        $transactionRef = (string) $payload['idempotency_key'];
-        $source = (string) ($payload['source'] ?? 'offline_agent');
+        $mongoUserId = (string) ($payload['mongo_user_id'] ?? '');
+        $coins = (int) ($payload['coins_amount'] ?? 0);
+        $idempotencyKey = (string) ($payload['idempotency_key'] ?? '');
         $meta = (array) ($payload['meta'] ?? []);
+        $meta['source'] = $payload['source'] ?? ($meta['source'] ?? 'offline_agent_recharge');
 
-        $client = $this->getClient();
-        $db = $client->selectDatabase($this->dbName);
+        if ($idempotencyKey === '') {
+            throw new \InvalidArgumentException('idempotency_key is required.');
+        }
+        if ($mongoUserId === '') {
+            throw new \InvalidArgumentException('mongo_user_id is required.');
+        }
 
-        $users = $db->selectCollection($this->usersCollection);
-        $txns = $db->selectCollection($this->transactionsCollection);
+        if ($coins <= 0) {
+            return [
+                'transactionRef' => $idempotencyKey,
+                'status' => 'successful',
+                'idempotent' => true,
+                'note' => 'No-op credit (coins <= 0)',
+            ];
+        }
 
-        $now = new UTCDateTime((int) (microtime(true) * 1000));
-        $userObjectId = new ObjectId($mongoUserId);
-
-        // Ensure user exists (also fetch coin fields to determine correct casing)
-        $user = $users->findOne(
-            ['_id' => $userObjectId],
-            ['projection' => ['_id' => 1, 'coins' => 1, 'Coins' => 1]]
+        // idempotency check
+        $existing = $this->transactions()->findOne(
+            ['transactionRef' => $idempotencyKey],
+            ['projection' => ['_id' => 1, 'transactionRef' => 1, 'status' => 1]]
         );
 
-        if (!$user) {
-            throw new \RuntimeException('Mongo user not found in db=' . $this->dbName . ' collection=' . $this->usersCollection . ' id=' . $mongoUserId);
-        }
-
-        // Determine which coin field to increment (some docs may use Coins vs coins)
-        $coinField = 'coins';
-        if (isset($user['coins'])) {
-            $coinField = 'coins';
-        } elseif (isset($user['Coins'])) {
-            $coinField = 'Coins';
-        }
-
-        // Idempotency check
-        $existing = $txns->findOne(['transactionRef' => $transactionRef]);
-        if ($existing && (($existing['status'] ?? null) === 'successful')) {
-            return [
-                'already_processed' => true,
-                'transactionRef' => $transactionRef,
-                'transactionId' => (string) ($existing['_id'] ?? ''),
-                'status' => 'successful',
-                'coin_field' => $coinField,
-                'db' => $this->dbName,
-                'users_collection' => $this->usersCollection,
-            ];
-        }
-
-        // If doc exists and pending, try to "claim" it by switching to applying
         if ($existing) {
-            $status = (string) ($existing['status'] ?? 'pending');
-
-            if ($status === 'pending') {
-                $claimed = $txns->findOneAndUpdate(
-                    ['transactionRef' => $transactionRef, 'status' => 'pending'],
-                    ['$set' => ['status' => 'applying', 'updatedAt' => $now]],
-                    ['returnDocument' => \MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
-                );
-                if (!$claimed) {
-                    // someone else claimed; re-fetch and return processing/success
-                    $fresh = $txns->findOne(['transactionRef' => $transactionRef]);
-                    $freshStatus = (string) ($fresh['status'] ?? 'pending');
-                    return [
-                        'already_processed' => $freshStatus === 'successful',
-                        'transactionRef' => $transactionRef,
-                        'transactionId' => (string) ($fresh['_id'] ?? ''),
-                        'status' => $freshStatus,
-                        'coin_field' => $coinField,
-                        'db' => $this->dbName,
-                        'users_collection' => $this->usersCollection,
-                    ];
-                }
-                $existing = $claimed;
-            } elseif ($status === 'applying') {
-                return [
-                    'already_processed' => false,
-                    'transactionRef' => $transactionRef,
-                    'transactionId' => (string) ($existing['_id'] ?? ''),
-                    'status' => 'applying',
-                    'coin_field' => $coinField,
-                    'db' => $this->dbName,
-                    'users_collection' => $this->usersCollection,
-                ];
-            } elseif ($status === 'failed') {
-                // allow retry: set to pending again and proceed
-                $txns->updateOne(['_id' => $existing['_id']], ['$set' => ['status' => 'pending', 'updatedAt' => $now]]);
-                $existing = $txns->findOne(['transactionRef' => $transactionRef]);
-            }
-        }
-
-        // Create doc if missing
-        if (!$existing) {
-            $insert = $txns->insertOne([
-                'transactionRef' => $transactionRef,
-                'userId' => $userObjectId,
-                'status' => 'applying',
-                'coinsFinal' => $coinsAmount,
-                'source' => $source,
-                'meta' => $meta,
-                'createdAt' => $now,
-                'updatedAt' => $now,
-            ]);
-            $existing = $txns->findOne(['_id' => $insert->getInsertedId()]);
-        }
-
-        // Apply economy: increment user coins
-        try {
-            $users->updateOne(
-                ['_id' => $userObjectId],
-                ['$inc' => [$coinField => $coinsAmount], '$set' => ['updatedAt' => $now]]
-            );
-
-            $txns->updateOne(
-                ['transactionRef' => $transactionRef],
-                ['$set' => ['status' => 'successful', 'updatedAt' => $now]]
-            );
-
+            $ex = (array) $existing;
             return [
-                'already_processed' => false,
-                'transactionRef' => $transactionRef,
-                'transactionId' => (string) ($existing['_id'] ?? ''),
-                'status' => 'successful',
-                'coin_field' => $coinField,
-                'db' => $this->dbName,
-                'users_collection' => $this->usersCollection,
+                'transactionRef' => $ex['transactionRef'] ?? $idempotencyKey,
+                'status' => $ex['status'] ?? 'successful',
+                'id' => isset($ex['_id']) ? (string) $ex['_id'] : null,
+                'idempotent' => true,
             ];
-        } catch (\Throwable $e) {
-            // mark failed with error payload
-            $txns->updateOne(
-                ['transactionRef' => $transactionRef],
-                ['$set' => ['status' => 'failed', 'error' => $e->getMessage(), 'updatedAt' => $now]]
-            );
-            throw $e;
         }
-    }
 
-    private function getClient(): MongoClient
-    {
-        if ($this->useLaravelConnection) {
-            return DB::connection('mongodb')->getClient();
+        $oid = $this->toObjectId($mongoUserId);
+
+        $insert = $this->transactions()->insertOne([
+            'transactionRef' => $idempotencyKey,
+            'userId' => $oid,
+            'status' => 'pending',
+            'coinsCredited' => (int) $coins,
+            'source' => $meta['source'] ?? 'offline_agent_recharge',
+            'meta' => $meta,
+            'createdAt' => now()->toDateTimeString(),
+            'updatedAt' => now()->toDateTimeString(),
+        ]);
+
+        $txnId = $insert->getInsertedId();
+
+        $res = $this->users()->updateOne(
+            ['_id' => $oid],
+            ['$inc' => ['Coins' => (int) $coins]]
+        );
+
+        if ((int) $res->getModifiedCount() <= 0) {
+            $this->transactions()->updateOne(
+                ['_id' => $txnId],
+                [
+                    '$set' => [
+                        'status' => 'failed',
+                        'error' => ['message' => 'User not found'],
+                        'updatedAt' => now()->toDateTimeString(),
+                    ],
+                ]
+            );
+
+            throw new \RuntimeException('User not found.');
         }
-        return new MongoClient($this->uri);
+
+        $this->transactions()->updateOne(
+            ['_id' => $txnId],
+            [
+                '$set' => [
+                    'status' => 'successful',
+                    'updatedAt' => now()->toDateTimeString(),
+                ],
+            ]
+        );
+
+        return [
+            'transactionRef' => $idempotencyKey,
+            'status' => 'successful',
+            'id' => (string) $txnId,
+            'idempotent' => false,
+        ];
     }
 }
