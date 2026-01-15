@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
 use MongoDB\BSON\ObjectId;
+use MongoDB\BSON\Regex;
 use MongoDB\Model\BSONDocument;
 
 class MongoEconomyService
@@ -322,5 +323,48 @@ public function getUserBasicByMongoId(string $mongoUserId): ?array
         return null;
     }
 }
+   public function listUsersForDropdown(array $opts = []): array
+    {
+        $filter = [];
 
+        if (!empty($opts['q'])) {
+            $q = trim($opts['q']);
+            $filter['$or'] = [
+                ['FullName' => new Regex($q, 'i')],
+                ['Username' => new Regex($q, 'i')],
+            ];
+        }
+
+        $limit = $opts['limit'] ?? 20;
+
+        $cursor = $this->users()->find(
+            $filter,
+            [
+                'projection' => [
+                    'FullName' => 1,
+                    'Username' => 1,
+                ],
+                'limit' => $limit,
+                'sort'  => ['Username' => 1],
+            ]
+        );
+
+        $items = [];
+
+        foreach ($cursor as $doc) {
+            if ($doc instanceof BSONDocument) {
+                $doc = $doc->getArrayCopy();
+            }
+
+            $items[] = [
+                'value' => (string) $doc['_id'],
+                'label' => trim(
+                    ($doc['FullName'] ?? '') .
+                    ' (@' . ($doc['Username'] ?? '') . ')'
+                ),
+            ];
+        }
+
+        return $items;
+    }
 }

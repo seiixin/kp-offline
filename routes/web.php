@@ -4,6 +4,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\PagesController;
 use App\Http\Controllers\Agent\AgentDashboardController;
 use App\Http\Controllers\Agent\OfflineRechargeController;
+use App\Http\Controllers\Agent\UserDropdownController;
 
 
 Route::get('/', function () {
@@ -35,6 +36,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::prefix('agent')->group(function () {
         Route::get('/recharges/list', [OfflineRechargeController::class, 'list'])->name('console.agent.recharges.list');
         Route::post('/recharges', [OfflineRechargeController::class, 'store'])->name('console.agent.recharges.store');
+        Route::get('/users/dropdown', [UserDropdownController::class,'index']);
+
     });
 
 });
