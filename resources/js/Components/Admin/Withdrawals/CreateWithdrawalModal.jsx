@@ -1,31 +1,84 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
+/**
+ * Business constants
+ * 11,200 diamonds = $1.00
+ */
+const DIAMONDS_PER_USD = 11200;
+
 export default function CreateWithdrawalModal({ onClose, onSaved }) {
+  /* =========================
+     FORM STATE
+  ========================= */
   const [form, setForm] = useState({
+    wallet_id: "",
     mongo_user_id: "",
     diamonds_amount: "",
-    payout_cents: "",
-    payout_method: "gcash",
-    reference: "",
-    notes: "",
   });
-
-  /* ---------- dropdown state ---------- */
-  const [userQuery, setUserQuery] = useState("");
-  const [userOptions, setUserOptions] = useState([]);
-  const [loadingUsers, setLoadingUsers] = useState(false);
-
-  /* ---------- ui state ---------- */
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
 
   function update(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
   /* =========================
-     FETCH USERS (DROPDOWN)
+     USERS DROPDOWN
+  ========================= */
+  const [userQuery, setUserQuery] = useState("");
+  const [userOptions, setUserOptions] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+
+  /* =========================
+     WALLETS DROPDOWN
+  ========================= */
+  const [wallets, setWallets] = useState([]);
+  const [loadingWallets, setLoadingWallets] = useState(false);
+
+  /* =========================
+     UI STATE
+  ========================= */
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  /* =========================
+     FETCH AGENT WALLETS
+  ========================= */
+  useEffect(() => {
+    let mounted = true;
+    setLoadingWallets(true);
+
+    axios
+      .get("/agent/wallets", { withCredentials: true })
+      .then((res) => {
+        const raw = Array.isArray(res.data)
+          ? res.data
+          : res.data?.data || [];
+
+        const diamondsWallets = raw.filter(
+          (w) => String(w.asset).toUpperCase() === "DIAMONDS"
+        );
+
+        if (!mounted) return;
+
+        setWallets(diamondsWallets);
+
+        if (diamondsWallets.length === 1) {
+          setForm((f) => ({
+            ...f,
+            wallet_id: String(diamondsWallets[0].id),
+          }));
+        }
+      })
+      .catch(() => mounted && setWallets([]))
+      .finally(() => mounted && setLoadingWallets(false));
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  /* =========================
+     FETCH USERS
   ========================= */
   useEffect(() => {
     const controller = new AbortController();
@@ -45,15 +98,40 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
   }, [userQuery]);
 
   /* =========================
+     DERIVED VALUES
+  ========================= */
+  const selectedWallet = useMemo(
+    () => wallets.find((w) => String(w.id) === String(form.wallet_id)),
+    [wallets, form.wallet_id]
+  );
+
+  const diamonds = Number(form.diamonds_amount || 0);
+
+  const payoutUsd = useMemo(() => {
+    if (!diamonds || diamonds < DIAMONDS_PER_USD) return 0;
+    return diamonds / DIAMONDS_PER_USD;
+  }, [diamonds]);
+
+  const payoutUsdFormatted = useMemo(
+    () =>
+      payoutUsd > 0
+        ? `$${payoutUsd.toFixed(2)}`
+        : "$0.00",
+    [payoutUsd]
+  );
+
+  /* =========================
      VALIDATION
   ========================= */
   const canSubmit = useMemo(() => {
     return (
-      String(form.mongo_user_id || "").length === 24 &&
-      Number(form.diamonds_amount || 0) > 0 &&
-      Number(form.payout_cents || 0) > 0
+      Number(form.wallet_id) > 0 &&
+      String(form.mongo_user_id).length === 24 &&
+      diamonds >= 112000 &&
+      selectedWallet &&
+      diamonds <= Number(selectedWallet.available_cents)
     );
-  }, [form]);
+  }, [form, diamonds, selectedWallet]);
 
   /* =========================
      SUBMIT
@@ -62,7 +140,7 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
     setError(null);
 
     if (!canSubmit) {
-      setError("User, diamonds, and payout are required.");
+      setError("Please complete all required fields correctly.");
       return;
     }
 
@@ -71,12 +149,9 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
       await axios.post(
         "/agent/withdrawals",
         {
+          wallet_id: Number(form.wallet_id),
           mongo_user_id: form.mongo_user_id,
-          diamonds_amount: Number(form.diamonds_amount),
-          payout_cents: Number(form.payout_cents),
-          payout_method: form.payout_method,
-          reference: form.reference || null,
-          notes: form.notes || null,
+          diamonds_amount: diamonds,
         },
         { withCredentials: true }
       );
@@ -103,70 +178,69 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
         </div>
 
         <div className="mt-4 space-y-3">
-          {/* USER DROPDOWN */}
-          <div>
-            <input
-              className="mb-1 w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-              placeholder="Search name or username…"
-              value={userQuery}
-              onChange={(e) => setUserQuery(e.target.value)}
-            />
-
-            <select
-              className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-              value={form.mongo_user_id}
-              onChange={(e) => update("mongo_user_id", e.target.value)}
-            >
-              <option value="">
-                {loadingUsers ? "Loading users…" : "Select user"}
+          {/* WALLET */}
+          <select
+            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
+            value={form.wallet_id}
+            onChange={(e) => update("wallet_id", e.target.value)}
+          >
+            <option value="">
+              {loadingWallets ? "Loading wallets…" : "Select wallet"}
+            </option>
+            {wallets.map((w) => (
+              <option key={w.id} value={w.id}>
+                DIAMONDS — {Number(w.available_cents).toLocaleString()}
               </option>
-              {userOptions.map((u) => (
-                <option key={u.value} value={u.value}>
-                  {u.label}
-                </option>
-              ))}
-            </select>
-          </div>
+            ))}
+          </select>
 
+          {/* USER SEARCH */}
           <input
-            type="number"
             className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-            placeholder="Diamonds"
-            value={form.diamonds_amount}
-            onChange={(e) => update("diamonds_amount", e.target.value)}
-          />
-
-          <input
-            type="number"
-            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-            placeholder="Payout (cents)"
-            value={form.payout_cents}
-            onChange={(e) => update("payout_cents", e.target.value)}
+            placeholder="Search name or username…"
+            value={userQuery}
+            onChange={(e) => setUserQuery(e.target.value)}
           />
 
           <select
             className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-            value={form.payout_method}
-            onChange={(e) => update("payout_method", e.target.value)}
+            value={form.mongo_user_id}
+            onChange={(e) => update("mongo_user_id", e.target.value)}
           >
-            <option value="gcash">GCash</option>
-            <option value="bank">Bank</option>
+            <option value="">
+              {loadingUsers ? "Loading users…" : "Select user"}
+            </option>
+            {userOptions.map((u) => (
+              <option key={u.value} value={u.value}>
+                {u.label}
+              </option>
+            ))}
           </select>
 
+          {/* DIAMONDS */}
           <input
+            type="number"
+            min={112000}
             className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-            placeholder="Reference (optional)"
-            value={form.reference}
-            onChange={(e) => update("reference", e.target.value)}
+            placeholder="Diamonds (min 112,000)"
+            value={form.diamonds_amount}
+            onChange={(e) => update("diamonds_amount", e.target.value)}
           />
 
-          <textarea
-            rows={3}
-            className="w-full resize-none rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-            placeholder="Notes (optional)"
-            value={form.notes}
-            onChange={(e) => update("notes", e.target.value)}
-          />
+          {/* PAYOUT PREVIEW */}
+          <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[12px] text-white">
+            Estimated payout:{" "}
+            <span className="font-semibold text-emerald-400">
+              {payoutUsdFormatted}
+            </span>
+          </div>
+
+          {selectedWallet && (
+            <div className="text-[11px] text-white/60">
+              Available:{" "}
+              {Number(selectedWallet.available_cents).toLocaleString()} diamonds
+            </div>
+          )}
         </div>
 
         {error && (

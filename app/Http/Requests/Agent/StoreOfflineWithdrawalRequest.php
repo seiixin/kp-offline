@@ -8,35 +8,81 @@ class StoreOfflineWithdrawalRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        // Auth middleware already enforced. Add role checks here if needed.
+        // Auth middleware already enforced
         return true;
     }
 
     public function rules(): array
     {
         return [
-            'mongo_user_id' => ['required', 'string', 'size:24', 'regex:/^[a-f0-9]{24}$/i'],
-            'diamonds_amount' => ['required', 'integer', 'min:1', 'max:1000000000'],
+            // Mongo player ID (ObjectId)
+            'mongo_user_id' => [
+                'required',
+                'string',
+                'size:24',
+                'regex:/^[a-f0-9]{24}$/i',
+            ],
 
-            // payout for the agent to give to the player (cash-out) in cents
-            'payout_cents' => ['required', 'integer', 'min:0', 'max:100000000000'],
+            // Agent wallet to debit
+            'wallet_id' => [
+                'required',
+                'integer',
+                'exists:wallets,id',
+            ],
 
-            'currency' => ['nullable', 'string', 'size:3'],
-            'payout_method' => ['required', 'string', 'in:cash,gcash,bank,other'],
+            // Diamonds to withdraw (agent commission)
+            'diamonds_amount' => [
+                'required',
+                'integer',
+                'min:1',
+                'max:1000000000',
+            ],
 
-            'reference' => ['nullable', 'string', 'max:64'],
-            'notes' => ['nullable', 'string', 'max:500'],
+            // ❌ REMOVED: payout_cents
+            // payout is computed securely in the controller
 
-            // optional client-provided idempotency key for retries
-            'idempotency_key' => ['nullable', 'uuid'],
+            // Optional metadata
+            'currency' => [
+                'nullable',
+                'string',
+                'size:3',
+            ],
+
+            'payout_method' => [
+                'nullable',
+                'string',
+                'in:cash,gcash,bank,other',
+            ],
+
+
+            'reference' => [
+                'nullable',
+                'string',
+                'max:64',
+            ],
+
+            'notes' => [
+                'nullable',
+                'string',
+                'max:500',
+            ],
+
+            // Optional client-provided idempotency key
+            'idempotency_key' => [
+                'nullable',
+                'uuid',
+            ],
         ];
     }
 
     public function messages(): array
     {
         return [
-            'mongo_user_id.size' => 'mongo_user_id must be a 24-character hex string.',
-            'mongo_user_id.regex' => 'mongo_user_id must be a valid Mongo ObjectId (hex).',
+            'mongo_user_id.size' =>
+                'mongo_user_id must be a 24-character hex string.',
+
+            'mongo_user_id.regex' =>
+                'mongo_user_id must be a valid Mongo ObjectId (hex).',
         ];
     }
 }

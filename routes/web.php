@@ -5,6 +5,8 @@ use App\Http\Controllers\PagesController;
 use App\Http\Controllers\Agent\AgentDashboardController;
 use App\Http\Controllers\Agent\OfflineRechargeController;
 use App\Http\Controllers\Agent\UserDropdownController;
+use App\Http\Controllers\Agent\AgentWalletController;
+use App\Http\Controllers\Admin\OfflineWithdrawalController;
 
 
 Route::get('/', function () {
@@ -31,6 +33,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/agents', [PagesController::class, 'agents'])->name('console.admin.agents');
         Route::get('/top-ups', [PagesController::class, 'topUps'])->name('console.admin.topups');
         Route::get('/audit-log', [PagesController::class, 'auditLog'])->name('console.admin.auditlog');
+        Route::get('/withdrawals', [OfflineWithdrawalController::class, 'index']);
+        Route::put('/withdrawals/{id}', [OfflineWithdrawalController::class, 'update']); 
     });
 
     Route::prefix('agent')->group(function () {
@@ -38,6 +42,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::post('/recharges', [OfflineRechargeController::class, 'store'])->name('console.agent.recharges.store');
         Route::get('/users/dropdown', [UserDropdownController::class,'index']);
 
+    });
+
+    Route::prefix('agent')->group(function () {
+        Route::get('/wallets', [AgentWalletController::class, 'index']);
+        Route::get('/wallets/{id}', [AgentWalletController::class, 'show']);
+        Route::post('/wallets/ensure-diamonds', [AgentWalletController::class, 'ensureDiamondsWallet']);
     });
 
 });
