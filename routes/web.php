@@ -35,7 +35,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/audit-log', [PagesController::class, 'auditLog'])->name('console.admin.auditlog');
         Route::get('/withdrawals', [OfflineWithdrawalController::class, 'index']);
         Route::put('/withdrawals/{id}', [OfflineWithdrawalController::class, 'update']); 
-    });
+        Route::get('/wallets', [AdminWalletController::class, 'index']);
+        Route::get('/wallets/{id}', [AdminWalletController::class, 'show']);
+        Route::get('/wallets/{id}/ledger', [AdminWalletController::class, 'ledger']);
+        });
 
     Route::prefix('agent')->group(function () {
         Route::get('/recharges/list', [OfflineRechargeController::class, 'list'])->name('console.agent.recharges.list');
@@ -48,7 +51,9 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/wallets', [AgentWalletController::class, 'index']);
         Route::get('/wallets/{id}', [AgentWalletController::class, 'show']);
         Route::post('/wallets/ensure-diamonds', [AgentWalletController::class, 'ensureDiamondsWallet']);
-    });
+        Route::get('/wallet/summary', [AgentWalletController::class, 'summary']);
+        Route::get('/wallet/ledger', [AgentWalletController::class, 'ledger']);
+        });
 
 });
 // Module 5 - Agent Withdrawals routes

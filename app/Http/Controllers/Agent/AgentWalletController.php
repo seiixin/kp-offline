@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Agent;
 
 use App\Http\Controllers\Controller;
 use App\Models\Wallet;
+use App\Models\LedgerEntry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,79 +15,79 @@ class AgentWalletController extends Controller
      | HELPERS
      ===================================================== */
 
-    /**
-     * Resolve the agent ID from the authenticated user
-     */
     protected function resolveAgentId(): int
     {
         $user = auth()->user();
         return (int) ($user->agent_id ?? $user->id);
     }
 
+    protected function diamondsWallet(int $agentId): Wallet
+    {
+        return Wallet::where('owner_type', 'agent')
+            ->where('owner_id', $agentId)
+            ->whereRaw('UPPER(asset) = ?', ['DIAMONDS'])
+            ->firstOrFail();
+    }
+
     /* =====================================================
      | GET /agent/wallets
-     | List agent wallets (for dropdown / selection)
+     | Dropdown / legacy support
      ===================================================== */
-    public function index(Request $request): JsonResponse
+    public function index(): JsonResponse
     {
         $agentId = $this->resolveAgentId();
 
-        $wallets = Wallet::where('owner_type', 'agent')
-            ->where('owner_id', $agentId)
-            ->orderBy('id')
-            ->get([
-                'id',
-                'asset',
-                'available_cents',
-                'reserved_cents',
-            ]);
-
         return response()->json([
-            'data' => $wallets,
+            'data' => Wallet::where('owner_type', 'agent')
+                ->where('owner_id', $agentId)
+                ->orderBy('id')
+                ->get([
+                    'id',
+                    'asset',
+                    'available_cents',
+                    'reserved_cents',
+                ]),
         ]);
     }
 
     /* =====================================================
      | GET /agent/wallets/{id}
-     | Get a single wallet (ownership enforced)
+     | Legacy single wallet fetch
      ===================================================== */
-    public function show(Request $request, int $id): JsonResponse
+    public function show(int $id): JsonResponse
     {
         $agentId = $this->resolveAgentId();
 
-        $wallet = Wallet::where('id', $id)
-            ->where('owner_type', 'agent')
-            ->where('owner_id', $agentId)
-            ->firstOrFail([
-                'id',
-                'asset',
-                'available_cents',
-                'reserved_cents',
-            ]);
-
         return response()->json([
-            'data' => $wallet,
+            'data' => Wallet::where('id', $id)
+                ->where('owner_type', 'agent')
+                ->where('owner_id', $agentId)
+                ->firstOrFail([
+                    'id',
+                    'asset',
+                    'available_cents',
+                    'reserved_cents',
+                ]),
         ]);
     }
 
     /* =====================================================
      | POST /agent/wallets/ensure-diamonds
-     | Ensure agent has a DIAMONDS wallet
-     | (idempotent)
+     | Idempotent wallet creation
      ===================================================== */
-    public function ensureDiamondsWallet(Request $request): JsonResponse
+    public function ensureDiamondsWallet(): JsonResponse
     {
         $agentId = $this->resolveAgentId();
 
         $wallet = DB::transaction(function () use ($agentId) {
-            $wallet = Wallet::where('owner_type', 'agent')
+            $existing = Wallet::where('owner_type', 'agent')
                 ->where('owner_id', $agentId)
                 ->whereRaw('UPPER(asset) = ?', ['DIAMONDS'])
                 ->lockForUpdate()
                 ->first();
 
-            if ($wallet) {
-                return $wallet;
+            if ($existing) {
+                return $existing;
             }
 
             return Wallet::create([
@@ -100,12 +101,56 @@ class AgentWalletController extends Controller
         });
 
         return response()->json([
+            'data' => $wallet->only([
+                'id',
+                'asset',
+                'available_cents',
+                'reserved_cents',
+            ]),
+        ]);
+    }
+
+    /* =====================================================
+     | GET /agent/wallet/summary
+     | Used by wallet cards (AVAILABLE / RESERVED)
+     ===================================================== */
+    public function summary(): JsonResponse
+    {
+        $agentId = $this->resolveAgentId();
+        $wallet  = $this->diamondsWallet($agentId);
+
+        return response()->json([
             'data' => [
-                'id'              => $wallet->id,
                 'asset'           => $wallet->asset,
                 'available_cents' => $wallet->available_cents,
                 'reserved_cents'  => $wallet->reserved_cents,
             ],
+        ]);
+    }
+
+    /* =====================================================
+     | GET /agent/wallet/ledger
+     | Used by wallet table
+     ===================================================== */
+    public function ledger(Request $request): JsonResponse
+    {
+        $agentId = $this->resolveAgentId();
+        $wallet  = $this->diamondsWallet($agentId);
+
+        $entries = LedgerEntry::where('wallet_id', $wallet->id)
+            ->latest()
+            ->limit(50)
+            ->get([
+                'id',
+                'event_type',
+                'direction',
+                'amount_cents',
+                'meta',
+                'created_at',
+            ]);
+
+        return response()->json([
+            'data' => $entries,
         ]);
     }
 }

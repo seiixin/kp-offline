@@ -25,7 +25,7 @@ class StoreOfflineWithdrawalRequest extends FormRequest
 
             // Agent wallet to debit
             'wallet_id' => [
-                'required',
+                'nullable',
                 'integer',
                 'exists:wallets,id',
             ],

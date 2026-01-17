@@ -19,14 +19,13 @@ class OfflineWithdrawalController extends Controller
     /* =====================================================
      | CONFIG
      ===================================================== */
-    private const DIAMONDS_PER_USD  = 11200;
-    private const WEEKLY_LIMIT_DAYS = 7;
-    private const MIN_DIAMONDS      = 112000; // $10
+    private const DIAMONDS_PER_USD = 11200;
+    private const MIN_DIAMONDS     = 112000; // $10
+    private const CURRENCY         = 'PHP';
 
     /* =====================================================
      | HELPERS
      ===================================================== */
-     
     protected function resolveAgentId(): int
     {
         $user = auth()->user();
@@ -35,6 +34,7 @@ class OfflineWithdrawalController extends Controller
 
     /* =====================================================
      | GET /agent/withdrawals
+     | LIST + PLAYER NAME ENRICHMENT (FIXED)
      ===================================================== */
     public function list(Request $request, MongoEconomyService $mongoEconomy): JsonResponse
     {
@@ -62,10 +62,14 @@ class OfflineWithdrawalController extends Controller
 
         $page = $query->paginate($validated['per'] ?? 20);
 
+        /* ===============================
+         | FETCH PLAYER NAMES (RESTORED)
+         =============================== */
         $mongoIds = collect($page->items())
             ->pluck('mongo_user_id')
             ->filter()
-            ->unique();
+            ->unique()
+            ->values();
 
         $players = [];
         foreach ($mongoIds as $mongoId) {
@@ -78,10 +82,12 @@ class OfflineWithdrawalController extends Controller
             }
         }
 
-        $rows = collect($page->items())->map(fn ($row) => array_merge(
-            $row->toArray(),
-            ['player' => $players[$row->mongo_user_id] ?? null]
-        ));
+        $rows = collect($page->items())->map(function ($row) use ($players) {
+            return array_merge(
+                $row->toArray(),
+                ['player' => $players[$row->mongo_user_id] ?? null]
+            );
+        });
 
         return response()->json([
             'data' => [
@@ -96,129 +102,123 @@ class OfflineWithdrawalController extends Controller
 
     /* =====================================================
      | POST /agent/withdrawals
-     | Agent submits request (PROCESSING ONLY)
+     | PLAYER WITHDRAWAL (USES AGENT CASH)
      ===================================================== */
-public function store(StoreOfflineWithdrawalRequest $request): JsonResponse
-{
+public function store(
+    StoreOfflineWithdrawalRequest $request,
+    MongoEconomyService $mongoEconomy
+): JsonResponse {
     $agentId = $this->resolveAgentId();
     $data    = $request->validated();
 
-    $diamonds    = (int) $data['diamonds_amount'];
     $mongoUserId = $data['mongo_user_id'];
-    $walletId    = (int) $data['wallet_id'];
+    $diamonds    = (int) $data['diamonds_amount'];
 
-    // ===============================
-    // Weekly withdrawal limit
-    // ===============================
-    $recent = OfflineWithdrawal::where('agent_user_id', $agentId)
-        ->where('status', 'successful')
-        ->where('created_at', '>=', now()->subDays(self::WEEKLY_LIMIT_DAYS))
-        ->exists();
-
-    if ($recent) {
-        return response()->json([
-            'message' => 'Withdrawal allowed only once per week.',
-        ], 422);
-    }
-
-    // ===============================
-    // Minimum diamonds rule ($10)
-    // ===============================
+    /* ===============================
+     | MINIMUM RULE
+     =============================== */
     if ($diamonds < self::MIN_DIAMONDS) {
         return response()->json([
             'message' => 'Minimum withdrawal is $10.',
         ], 422);
     }
 
-    // ===============================
-    // SERVER-AUTHORITATIVE PAYOUT
-    // ===============================
-    $payoutCents = (int) floor(
-        ($diamonds / self::DIAMONDS_PER_USD) * 100
-    );
+    /* ===============================
+     | SERVER-AUTHORITATIVE CONVERSION
+     =============================== */
+    $usd         = $diamonds / self::DIAMONDS_PER_USD;
+    $payoutCents = (int) round($usd * 100 * 56); // USD → PHP (server rate)
 
-    return DB::transaction(function () use (
-        $agentId,
-        $walletId,
-        $diamonds,
-        $mongoUserId,
-        $payoutCents,
-        $data
-    ) {
-        // ===============================
-        // Lock agent wallet
-        // ===============================
-        $wallet = Wallet::where('id', $walletId)
-            ->where('owner_type', 'agent')
-            ->where('owner_id', $agentId)
-            ->whereRaw('UPPER(asset) = ?', ['DIAMONDS'])
-            ->lockForUpdate()
-            ->firstOrFail();
+    try {
+        $withdrawal = DB::transaction(function () use (
+            $agentId,
+            $mongoUserId,
+            $diamonds,
+            $payoutCents,
+            $mongoEconomy,
+            $data
+        ) {
+            /* ===============================
+             | LOCK AGENT CASH WALLET (PHP)
+             =============================== */
+            $wallet = Wallet::where('owner_type', 'agent')
+                ->where('owner_id', $agentId)
+                ->whereRaw('UPPER(asset) = ?', ['PHP'])
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        if ($wallet->available_cents < $diamonds) {
-            return response()->json([
-                'message' => 'Insufficient agent commission balance.',
-            ], 422);
-        }
+            if ($wallet->available_cents < $payoutCents) {
+                throw new \RuntimeException('Insufficient agent cash liquidity.');
+            }
 
-        // ===============================
-        // Reserve diamonds
-        // ===============================
-        $wallet->decrement('available_cents', $diamonds);
-        $wallet->increment('reserved_cents', $diamonds);
+            /* ===============================
+             | RESERVE AGENT CASH
+             =============================== */
+            $wallet->decrement('available_cents', $payoutCents);
+            $wallet->increment('reserved_cents', $payoutCents);
 
-        // ===============================
-        // Create withdrawal request
-        // ===============================
-        $withdrawal = OfflineWithdrawal::create([
-            'wallet_id'       => $wallet->id,
-            'agent_user_id'   => $agentId,
-            'mongo_user_id'   => $mongoUserId,
-            'diamonds_amount' => $diamonds,
-            'payout_cents'    => $payoutCents,
-            'currency'        => 'USD',
-            'payout_method'   => $data['payout_method'] ?? null, // OPTIONAL
-            'status'          => 'processing',
-            'idempotency_key' => $data['idempotency_key'] ?? (string) Str::uuid(),
-        ]);
+            /* ===============================
+             | RESERVE PLAYER DIAMONDS (MONGO)
+             =============================== */
+            $mongoEconomy->reserveDiamonds(
+                $mongoUserId,
+                $diamonds
+            );
 
-        // ===============================
-        // Ledger entry (DIAMONDS)
-        // ===============================
-        LedgerEntry::create([
-            'wallet_id'    => $wallet->id,
-            'event_type'   => LedgerEntry::EVENT_OFFLINE_WITHDRAWAL,
-            'event_id'     => $withdrawal->id,
-            'direction'    => LedgerEntry::DIR_DEBIT,
-            'amount_cents' => $diamonds,
-            'meta'         => [
-                'unit' => 'DIAMONDS',
-            ],
-        ]);
+            /* ===============================
+             | CREATE WITHDRAWAL RECORD
+             =============================== */
+            $withdrawal = OfflineWithdrawal::create([
+                'agent_user_id'   => $agentId,
+                'mongo_user_id'   => $mongoUserId,
+                'diamonds_amount' => $diamonds,
+                'payout_cents'    => $payoutCents,
+                'currency'        => self::CURRENCY,
+                'status'          => 'processing',
+                'idempotency_key' => $data['idempotency_key'] ?? (string) Str::uuid(),
+            ]);
 
-        // ===============================
-        // Audit log
-        // ===============================
-        AuditLogger::record(
-            'agent_withdrawal_requested',
-            'offline_withdrawal',
-            (string) $withdrawal->id,
-            [
-                'diamonds' => $diamonds,
-                'usd'      => $payoutCents / 100,
-            ]
-        );
+            /* ===============================
+             | LEDGER ENTRY (CASH)
+             =============================== */
+            LedgerEntry::create([
+                'wallet_id'    => $wallet->id,
+                'event_type'   => LedgerEntry::EVENT_OFFLINE_WITHDRAWAL,
+                'event_id'     => $withdrawal->id,
+                'direction'    => LedgerEntry::DIR_DEBIT,
+                'amount_cents' => $payoutCents,
+                'meta'         => [
+                    'unit'     => 'PHP',
+                    'diamonds' => $diamonds,
+                ],
+            ]);
 
+            AuditLogger::record(
+                'player_withdrawal_requested',
+                'offline_withdrawal',
+                (string) $withdrawal->id,
+                [
+                    'mongo_user_id' => $mongoUserId,
+                    'diamonds'      => $diamonds,
+                    'php'           => $payoutCents / 100,
+                ]
+            );
+
+            return $withdrawal;
+        });
+    } catch (\RuntimeException $e) {
         return response()->json([
-            'message'    => 'Withdrawal request submitted.',
-            'withdrawal' => $withdrawal,
-        ]);
-    });
-}
+            'message' => $e->getMessage(),
+        ], 422);
+    }
 
+    return response()->json([
+        'message'    => 'Withdrawal request submitted.',
+        'withdrawal' => $withdrawal,
+    ]);
+}
     /* =====================================================
      | PUT /agent/withdrawals/{id}
-     | Update reference / notes (processing only)
      ===================================================== */
     public function update(Request $request, int $id): JsonResponse
     {
@@ -237,7 +237,7 @@ public function store(StoreOfflineWithdrawalRequest $request): JsonResponse
         );
 
         AuditLogger::record(
-            'agent_withdrawal_updated',
+            'player_withdrawal_updated',
             'offline_withdrawal',
             (string) $withdrawal->id,
             []
@@ -251,34 +251,44 @@ public function store(StoreOfflineWithdrawalRequest $request): JsonResponse
 
     /* =====================================================
      | DELETE /agent/withdrawals/{id}
-     | Cancel (processing only)
+     | CANCEL → RELEASE CASH + PLAYER DIAMONDS
      ===================================================== */
-    public function destroy(Request $request, int $id): JsonResponse
-    {
+    public function destroy(
+        Request $request,
+        int $id,
+        MongoEconomyService $mongoEconomy
+    ): JsonResponse {
         $agentId = $this->resolveAgentId();
 
-        return DB::transaction(function () use ($agentId, $id) {
+        return DB::transaction(function () use ($agentId, $id, $mongoEconomy) {
             $withdrawal = OfflineWithdrawal::where('id', $id)
                 ->where('agent_user_id', $agentId)
                 ->where('status', 'processing')
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $wallet = Wallet::where('id', $withdrawal->wallet_id)
-                ->where('owner_type', 'agent')
+            $wallet = Wallet::where('owner_type', 'agent')
                 ->where('owner_id', $agentId)
+                ->whereRaw('UPPER(asset) = ?', ['PHP'])
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $wallet->increment('available_cents', $withdrawal->diamonds_amount);
-            $wallet->decrement('reserved_cents', $withdrawal->diamonds_amount);
+            // Release agent cash
+            $wallet->increment('available_cents', $withdrawal->payout_cents);
+            $wallet->decrement('reserved_cents', $withdrawal->payout_cents);
+
+            // Release player diamonds
+            $mongoEconomy->releaseReservedDiamonds(
+                $withdrawal->mongo_user_id,
+                $withdrawal->diamonds_amount
+            );
 
             $withdrawal->update([
                 'status' => 'cancelled',
             ]);
 
             AuditLogger::record(
-                'agent_withdrawal_cancelled',
+                'player_withdrawal_cancelled',
                 'offline_withdrawal',
                 (string) $withdrawal->id,
                 []

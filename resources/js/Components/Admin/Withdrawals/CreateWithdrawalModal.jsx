@@ -4,15 +4,16 @@ import axios from "axios";
 /**
  * Business constants
  * 11,200 diamonds = $1.00
+ * UI preview only — backend is authoritative
  */
 const DIAMONDS_PER_USD = 11200;
+const USD_TO_PHP = 56; // UI preview rate only
 
 export default function CreateWithdrawalModal({ onClose, onSaved }) {
   /* =========================
      FORM STATE
   ========================= */
   const [form, setForm] = useState({
-    wallet_id: "",
     mongo_user_id: "",
     diamonds_amount: "",
   });
@@ -29,10 +30,10 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
   const [loadingUsers, setLoadingUsers] = useState(false);
 
   /* =========================
-     WALLETS DROPDOWN
+     AGENT CASH WALLET
   ========================= */
-  const [wallets, setWallets] = useState([]);
-  const [loadingWallets, setLoadingWallets] = useState(false);
+  const [cashWallet, setCashWallet] = useState(null);
+  const [loadingWallet, setLoadingWallet] = useState(false);
 
   /* =========================
      UI STATE
@@ -41,11 +42,11 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
   const [error, setError] = useState(null);
 
   /* =========================
-     FETCH AGENT WALLETS
+     FETCH AGENT CASH WALLET
   ========================= */
   useEffect(() => {
     let mounted = true;
-    setLoadingWallets(true);
+    setLoadingWallet(true);
 
     axios
       .get("/agent/wallets", { withCredentials: true })
@@ -54,23 +55,14 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
           ? res.data
           : res.data?.data || [];
 
-        const diamondsWallets = raw.filter(
-          (w) => String(w.asset).toUpperCase() === "DIAMONDS"
+        const phpWallet = raw.find(
+          (w) => String(w.asset).toUpperCase() === "PHP"
         );
 
-        if (!mounted) return;
-
-        setWallets(diamondsWallets);
-
-        if (diamondsWallets.length === 1) {
-          setForm((f) => ({
-            ...f,
-            wallet_id: String(diamondsWallets[0].id),
-          }));
-        }
+        if (mounted) setCashWallet(phpWallet || null);
       })
-      .catch(() => mounted && setWallets([]))
-      .finally(() => mounted && setLoadingWallets(false));
+      .catch(() => mounted && setCashWallet(null))
+      .finally(() => mounted && setLoadingWallet(false));
 
     return () => {
       mounted = false;
@@ -100,11 +92,6 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
   /* =========================
      DERIVED VALUES
   ========================= */
-  const selectedWallet = useMemo(
-    () => wallets.find((w) => String(w.id) === String(form.wallet_id)),
-    [wallets, form.wallet_id]
-  );
-
   const diamonds = Number(form.diamonds_amount || 0);
 
   const payoutUsd = useMemo(() => {
@@ -112,26 +99,22 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
     return diamonds / DIAMONDS_PER_USD;
   }, [diamonds]);
 
-  const payoutUsdFormatted = useMemo(
-    () =>
-      payoutUsd > 0
-        ? `$${payoutUsd.toFixed(2)}`
-        : "$0.00",
-    [payoutUsd]
-  );
+  const payoutPhp = useMemo(() => {
+    return payoutUsd * USD_TO_PHP;
+  }, [payoutUsd]);
 
   /* =========================
      VALIDATION
   ========================= */
   const canSubmit = useMemo(() => {
+    if (!cashWallet) return false;
+
     return (
-      Number(form.wallet_id) > 0 &&
       String(form.mongo_user_id).length === 24 &&
       diamonds >= 112000 &&
-      selectedWallet &&
-      diamonds <= Number(selectedWallet.available_cents)
+      payoutPhp * 100 <= Number(cashWallet.available_cents)
     );
-  }, [form, diamonds, selectedWallet]);
+  }, [form.mongo_user_id, diamonds, payoutPhp, cashWallet]);
 
   /* =========================
      SUBMIT
@@ -149,7 +132,6 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
       await axios.post(
         "/agent/withdrawals",
         {
-          wallet_id: Number(form.wallet_id),
           mongo_user_id: form.mongo_user_id,
           diamonds_amount: diamonds,
         },
@@ -174,25 +156,20 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0f0f0f] p-5">
         <div className="text-sm font-semibold text-white">
-          New Withdrawal
+          New Player Withdrawal
         </div>
 
         <div className="mt-4 space-y-3">
-          {/* WALLET */}
-          <select
-            className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white"
-            value={form.wallet_id}
-            onChange={(e) => update("wallet_id", e.target.value)}
-          >
-            <option value="">
-              {loadingWallets ? "Loading wallets…" : "Select wallet"}
-            </option>
-            {wallets.map((w) => (
-              <option key={w.id} value={w.id}>
-                DIAMONDS — {Number(w.available_cents).toLocaleString()}
-              </option>
-            ))}
-          </select>
+          {/* CASH WALLET (READ-ONLY) */}
+          <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white">
+            {loadingWallet
+              ? "Loading cash wallet…"
+              : cashWallet
+              ? `CASH (PHP) — ₱${(
+                  Number(cashWallet.available_cents) / 100
+                ).toLocaleString()}`
+              : "No cash wallet available"}
+          </div>
 
           {/* USER SEARCH */}
           <input
@@ -231,14 +208,14 @@ export default function CreateWithdrawalModal({ onClose, onSaved }) {
           <div className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[12px] text-white">
             Estimated payout:{" "}
             <span className="font-semibold text-emerald-400">
-              {payoutUsdFormatted}
+              ₱{payoutPhp.toFixed(2)}
             </span>
           </div>
 
-          {selectedWallet && (
+          {cashWallet && (
             <div className="text-[11px] text-white/60">
-              Available:{" "}
-              {Number(selectedWallet.available_cents).toLocaleString()} diamonds
+              Available cash: ₱
+              {(Number(cashWallet.available_cents) / 100).toLocaleString()}
             </div>
           )}
         </div>
