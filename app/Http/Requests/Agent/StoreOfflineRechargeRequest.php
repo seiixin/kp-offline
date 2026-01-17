@@ -17,7 +17,7 @@ class StoreOfflineRechargeRequest extends FormRequest
         return [
             'mongo_user_id' => ['required', 'string', 'size:24', 'regex:/^[a-fA-F0-9]{24}$/'],
             'coins_amount' => ['required', 'integer', 'min:1', 'max:100000000'],
-            'amount_cents'  => ['required', 'integer', 'min:1'],
+            'amount_usd_cents'  => ['required', 'integer', 'min:1'],
             'method' => ['required', 'string', 'max:50'],
             'reference' => ['nullable', 'string', 'max:120'],
             'proof_url' => ['nullable', 'string', 'max:500'],

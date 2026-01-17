@@ -21,6 +21,14 @@ class AgentWalletController extends Controller
         return (int) ($user->agent_id ?? $user->id);
     }
 
+    protected function cashWallet(int $agentId): Wallet
+    {
+        return Wallet::where('owner_type', 'agent')
+            ->where('owner_id', $agentId)
+            ->whereRaw('UPPER(asset) = ?', ['PHP'])
+            ->firstOrFail();
+    }
+
     protected function diamondsWallet(int $agentId): Wallet
     {
         return Wallet::where('owner_type', 'agent')
@@ -31,7 +39,7 @@ class AgentWalletController extends Controller
 
     /* =====================================================
      | GET /agent/wallets
-     | Dropdown / legacy support
+     | Legacy / dropdown support (ALL wallets)
      ===================================================== */
     public function index(): JsonResponse
     {
@@ -51,29 +59,86 @@ class AgentWalletController extends Controller
     }
 
     /* =====================================================
-     | GET /agent/wallets/{id}
-     | Legacy single wallet fetch
+     | GET /agent/wallet/overview
+     | Used by UI cards (CASH + DIAMONDS)
      ===================================================== */
-    public function show(int $id): JsonResponse
+    public function overview(): JsonResponse
     {
         $agentId = $this->resolveAgentId();
 
+        $wallets = Wallet::where('owner_type', 'agent')
+            ->where('owner_id', $agentId)
+            ->get()
+            ->keyBy(fn ($w) => strtoupper($w->asset));
+
+        $cash = $wallets->get('PHP');
+        $diamonds = $wallets->get('DIAMONDS');
+
         return response()->json([
-            'data' => Wallet::where('id', $id)
-                ->where('owner_type', 'agent')
-                ->where('owner_id', $agentId)
-                ->firstOrFail([
-                    'id',
-                    'asset',
-                    'available_cents',
-                    'reserved_cents',
-                ]),
+            'data' => [
+                'cash' => $cash ? [
+                    'asset'           => 'PHP',
+                    'available_cents' => $cash->available_cents,
+                    'reserved_cents'  => $cash->reserved_cents,
+                ] : null,
+
+                'diamonds' => $diamonds ? [
+                    'asset'     => 'DIAMONDS',
+                    'available' => $diamonds->available_cents,
+                    'reserved'  => $diamonds->reserved_cents,
+                ] : null,
+            ],
+        ]);
+    }
+
+    /* =====================================================
+     | GET /agent/wallet/cash-summary
+     | CASH wallet only (used by recharge / withdrawal modals)
+     ===================================================== */
+    public function cashSummary(): JsonResponse
+    {
+        $agentId = $this->resolveAgentId();
+        $wallet  = $this->cashWallet($agentId);
+
+        return response()->json([
+            'data' => [
+                'asset'           => 'PHP',
+                'available_cents' => $wallet->available_cents,
+                'reserved_cents'  => $wallet->reserved_cents,
+            ],
+        ]);
+    }
+
+    /* =====================================================
+     | GET /agent/wallet/cash-ledger
+     | CASH ledger ONLY (DIAMONDS NEVER USE LEDGER)
+     ===================================================== */
+    public function cashLedger(Request $request): JsonResponse
+    {
+        $agentId = $this->resolveAgentId();
+        $wallet  = $this->cashWallet($agentId);
+
+        $entries = LedgerEntry::where('wallet_id', $wallet->id)
+            ->latest()
+            ->limit(50)
+            ->get([
+                'id',
+                'event_type',
+                'direction',
+                'amount_cents',
+                'currency',
+                'meta',
+                'created_at',
+            ]);
+
+        return response()->json([
+            'data' => $entries,
         ]);
     }
 
     /* =====================================================
      | POST /agent/wallets/ensure-diamonds
-     | Idempotent wallet creation
+     | Idempotent DIAMONDS wallet creation
      ===================================================== */
     public function ensureDiamondsWallet(): JsonResponse
     {
@@ -107,50 +172,6 @@ class AgentWalletController extends Controller
                 'available_cents',
                 'reserved_cents',
             ]),
-        ]);
-    }
-
-    /* =====================================================
-     | GET /agent/wallet/summary
-     | Used by wallet cards (AVAILABLE / RESERVED)
-     ===================================================== */
-    public function summary(): JsonResponse
-    {
-        $agentId = $this->resolveAgentId();
-        $wallet  = $this->diamondsWallet($agentId);
-
-        return response()->json([
-            'data' => [
-                'asset'           => $wallet->asset,
-                'available_cents' => $wallet->available_cents,
-                'reserved_cents'  => $wallet->reserved_cents,
-            ],
-        ]);
-    }
-
-    /* =====================================================
-     | GET /agent/wallet/ledger
-     | Used by wallet table
-     ===================================================== */
-    public function ledger(Request $request): JsonResponse
-    {
-        $agentId = $this->resolveAgentId();
-        $wallet  = $this->diamondsWallet($agentId);
-
-        $entries = LedgerEntry::where('wallet_id', $wallet->id)
-            ->latest()
-            ->limit(50)
-            ->get([
-                'id',
-                'event_type',
-                'direction',
-                'amount_cents',
-                'meta',
-                'created_at',
-            ]);
-
-        return response()->json([
-            'data' => $entries,
         ]);
     }
 }

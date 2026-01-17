@@ -49,11 +49,18 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::prefix('agent')->group(function () {
         Route::get('/wallets', [AgentWalletController::class, 'index']);
-        Route::get('/wallets/{id}', [AgentWalletController::class, 'show']);
-        Route::post('/wallets/ensure-diamonds', [AgentWalletController::class, 'ensureDiamondsWallet']);
-        Route::get('/wallet/summary', [AgentWalletController::class, 'summary']);
-        Route::get('/wallet/ledger', [AgentWalletController::class, 'ledger']);
-        });
+
+        Route::get('/wallet/overview', [AgentWalletController::class, 'overview']);
+
+        Route::get('/wallet/cash-summary', [AgentWalletController::class, 'cashSummary']);
+        Route::get('/wallet/cash-ledger',  [AgentWalletController::class, 'cashLedger']);
+
+        Route::post('/wallets/ensure-diamonds', [
+            AgentWalletController::class,
+            'ensureDiamondsWallet'
+        ]);
+    });
+
 
 });
 // Module 5 - Agent Withdrawals routes

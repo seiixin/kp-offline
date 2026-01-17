@@ -19,7 +19,11 @@ use RuntimeException;
 
 class OfflineRechargeController extends Controller
 {
-    private const CURRENCY = 'PHP';
+    private const CASH_CURRENCY = 'PHP';
+
+    // ===== ECONOMY CONSTANTS (CANONICAL) =====
+    private const COINS_PER_USD   = 14000; // 14,000 coins = $1
+    private const USD_TO_PHP_RATE = 56;    // $1 = ₱56
 
     /* =====================================================
      | LIST
@@ -50,7 +54,6 @@ class OfflineRechargeController extends Controller
 
         $page = $query->paginate($validated['per'] ?? 20);
 
-        // ---- enrich players (read-only) ----
         $mongoIds = collect($page->items())
             ->pluck('mongo_user_id')
             ->filter()
@@ -85,7 +88,8 @@ class OfflineRechargeController extends Controller
 
     /* =====================================================
      | STORE
-     | OFFLINE RECHARGE = AGENT CASH ↓ → PLAYER COINS ↑
+     | OFFLINE RECHARGE
+     | Agent CASH (soft funds) ↓ → Player COINS ↑
      ===================================================== */
     public function store(
         StoreOfflineRechargeRequest $request,
@@ -95,20 +99,29 @@ class OfflineRechargeController extends Controller
         $actorId = (int) Auth::id();
         $data    = $request->validated();
 
-        $coins        = (int) $data['coins_amount'];
-        $phpCents     = (int) $data['amount_cents']; // authoritative
-        $mongoUserId  = $data['mongo_user_id'];
-        $method       = $data['method'];
-        $reference    = $data['reference'] ?? null;
-        $proofUrl     = $data['proof_url'] ?? null;
-        $idemKey      = $data['idempotency_key'] ?? (string) Str::uuid();
+        /* ===============================
+        | INPUT (FROM REQUEST)
+        =============================== */
+        $coins          = (int) $data['coins_amount'];
+        $clientUsdCents = (int) $data['amount_usd_cents']; // REQUIRED, FROM FRONTEND
+        $mongoUserId    = $data['mongo_user_id'];
+        $method         = $data['method'];
+        $reference      = $data['reference'] ?? null;
+        $proofUrl       = $data['proof_url'] ?? null;
+        $idemKey        = $data['idempotency_key'] ?? (string) Str::uuid();
+
+        if ($coins <= 0) {
+            return response()->json([
+                'message' => 'Invalid coin amount.',
+            ], 422);
+        }
 
         try {
             $recharge = DB::transaction(function () use (
                 $agentId,
                 $actorId,
                 $coins,
-                $phpCents,
+                $clientUsdCents,
                 $mongoUserId,
                 $method,
                 $reference,
@@ -117,80 +130,105 @@ class OfflineRechargeController extends Controller
                 $mongoEconomy
             ) {
                 /* ===============================
-                 | 0) IDEMPOTENCY GUARD (SQL)
-                 =============================== */
-                $existing = OfflineRecharge::where('idempotency_key', $idemKey)->first();
-                if ($existing) {
-                    return $existing; // safe replay
+                | 0) IDEMPOTENCY
+                =============================== */
+                if ($existing = OfflineRecharge::where('idempotency_key', $idemKey)->first()) {
+                    return $existing;
                 }
 
                 /* ===============================
-                 | 1) LOCK AGENT CASH WALLET
-                 =============================== */
+                | 1) BACKEND CANONICAL CONVERSION
+                =============================== */
+                $computedUsdCents = (int) round(
+                    ($coins / self::COINS_PER_USD) * 100
+                );
+
+                if ($computedUsdCents <= 0) {
+                    throw new RuntimeException('Computed USD amount invalid.');
+                }
+
+                // 🔒 CRITICAL: CLIENT vs SERVER CONSISTENCY CHECK
+                // allow ±1 cent tolerance for rounding
+                if (abs($computedUsdCents - $clientUsdCents) > 1) {
+                    throw new RuntimeException('USD amount mismatch with coin value.');
+                }
+
+                // server value is authoritative
+                $usdCents = $computedUsdCents;
+
+                $phpCents = (int) round(
+                    $usdCents * self::USD_TO_PHP_RATE
+                );
+
+                /* ===============================
+                | 2) LOCK AGENT CASH WALLET (PHP)
+                =============================== */
                 $wallet = Wallet::where('owner_type', 'agent')
                     ->where('owner_id', $agentId)
-                    ->whereRaw('UPPER(asset) = ?', ['PHP'])
+                    ->whereRaw('UPPER(asset) = ?', [self::CASH_CURRENCY])
                     ->lockForUpdate()
                     ->firstOrFail();
 
-                if ($phpCents <= 0 || $wallet->available_cents < $phpCents) {
-                    throw new RuntimeException('Insufficient agent cash.');
+                if ($wallet->available_cents < $phpCents) {
+                    throw new RuntimeException('Insufficient agent cash balance.');
                 }
 
                 /* ===============================
-                 | 2) CREATE RECHARGE (PROCESSING)
-                 =============================== */
+                | 3) CREATE RECHARGE (PROCESSING)
+                =============================== */
                 $recharge = OfflineRecharge::create([
-                    'agent_id'        => $agentId,
-                    'mongo_user_id'   => $mongoUserId,
-                    'coins_amount'    => $coins,
-                    'amount_cents'    => $phpCents,
-                    'currency'        => self::CURRENCY,
-                    'method'          => $method,
-                    'reference'       => $reference,
-                    'proof_url'       => $proofUrl,
-                    'status'          => 'processing',
-                    'idempotency_key' => $idemKey,
+                    'agent_id'         => $agentId,
+                    'mongo_user_id'    => $mongoUserId,
+                    'coins_amount'     => $coins,
+                    'amount_usd_cents' => $usdCents,
+                    'currency'         => self::CASH_CURRENCY,
+                    'method'           => $method,
+                    'reference'        => $reference,
+                    'proof_url'        => $proofUrl,
+                    'status'           => 'processing',
+                    'idempotency_key'  => $idemKey,
                 ]);
 
                 /* ===============================
-                 | 3) DEBIT AGENT CASH
-                 =============================== */
+                | 4) DEBIT AGENT CASH (PHP)
+                =============================== */
                 $wallet->decrement('available_cents', $phpCents);
 
                 /* ===============================
-                 | 4) LEDGER ENTRY (CASH)
-                 =============================== */
+                | 5) LEDGER ENTRY (CASH ONLY)
+                =============================== */
                 LedgerEntry::create([
                     'wallet_id'    => $wallet->id,
                     'event_type'   => LedgerEntry::EVENT_OFFLINE_RECHARGE,
                     'event_id'     => $recharge->id,
                     'direction'    => LedgerEntry::DIR_DEBIT,
                     'amount_cents' => $phpCents,
-                    'currency'     => self::CURRENCY,
+                    'currency'     => self::CASH_CURRENCY,
                     'meta'         => [
                         'mongo_user_id' => $mongoUserId,
                         'coins'         => $coins,
+                        'usd_cents'     => $usdCents,
                     ],
                 ]);
 
                 /* ===============================
-                 | 5) CREDIT PLAYER COINS (MONGO)
-                 =============================== */
+                | 6) CREDIT PLAYER COINS (MONGO)
+                =============================== */
                 $mongoEconomy->creditCoins([
                     'mongo_user_id'   => $mongoUserId,
                     'coins_amount'    => $coins,
                     'idempotency_key' => $idemKey,
                     'source'          => 'offline_agent_recharge',
                     'meta'            => [
-                        'agent_id' => $agentId,
+                        'agent_id'            => $agentId,
                         'offline_recharge_id' => $recharge->id,
+                        'usd_cents'           => $usdCents,
                     ],
                 ]);
 
                 /* ===============================
-                 | 6) FINALIZE
-                 =============================== */
+                | 7) FINALIZE
+                =============================== */
                 $recharge->update(['status' => 'completed']);
 
                 $this->audit(
@@ -199,6 +237,7 @@ class OfflineRechargeController extends Controller
                     $recharge->id,
                     [
                         'coins' => $coins,
+                        'usd'   => $usdCents / 100,
                         'php'   => $phpCents / 100,
                     ]
                 );
@@ -216,7 +255,6 @@ class OfflineRechargeController extends Controller
             'recharge' => $recharge,
         ]);
     }
-
     /* =====================================================
      | HELPERS
      ===================================================== */
