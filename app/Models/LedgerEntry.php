@@ -11,6 +11,9 @@ class LedgerEntry extends Model
     // Event types
     public const EVENT_OFFLINE_WITHDRAWAL = 'offline_withdrawal';
 
+    
+    // ✅ ADD THIS LINE
+    public const EVENT_OFFLINE_RECHARGE   = 'offline_recharge';
     // Directions
     public const DIR_DEBIT  = 'debit';
     public const DIR_CREDIT = 'credit';
