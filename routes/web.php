@@ -8,6 +8,7 @@ use App\Http\Controllers\Agent\UserDropdownController;
 use App\Http\Controllers\Agent\AgentWalletController;
 use App\Http\Controllers\Admin\OfflineWithdrawalController;
 use App\Http\Controllers\Admin\AgentsController;
+use App\Http\Controllers\Admin\AuditLogsController;
 
 
 Route::get('/', function () {
@@ -47,6 +48,11 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::delete('/agents/{user}', [AgentsController::class, 'destroy']);
 
         Route::get('/agency-members-dropdown', [AgentsController::class, 'agencyMembersDropdown']);
+
+        // AUDIT LOGS CONTROLLER
+        Route::get('/audit-logs', [AuditLogsController::class, 'index']);
+        Route::get('/audit-logs/export/excel', [AuditLogsController::class, 'exportExcel']);
+        Route::get('/audit-logs/export/pdf', [AuditLogsController::class, 'exportPdf']);
         });
 
     Route::prefix('agent')->group(function () {
