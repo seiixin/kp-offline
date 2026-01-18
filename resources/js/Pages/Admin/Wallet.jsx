@@ -12,6 +12,22 @@ function formatDiamonds(amount) {
   return Number(amount || 0).toLocaleString();
 }
 
+function renderDirection(direction) {
+  if (direction === "credit") {
+    return (
+      <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-400">
+        CREDIT
+      </span>
+    );
+  }
+
+  return (
+    <span className="rounded-md bg-rose-500/15 px-2 py-0.5 text-[11px] font-semibold text-rose-400">
+      DEBIT
+    </span>
+  );
+}
+
 /* ================= CARD ================= */
 
 function Card({ title, subtitle, children }) {
@@ -138,16 +154,13 @@ export default function Wallet({ active }) {
               <th className="px-4 py-3 text-[10px] tracking-[0.20em]">
                 AMOUNT
               </th>
-              <th className="px-4 py-3 text-[10px] tracking-[0.20em]">
-                NOTE
-              </th>
             </tr>
           </thead>
 
           <tbody className="divide-y divide-white/10">
             {loading && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-white/40">
+                <td colSpan={3} className="px-4 py-6 text-white/40">
                   Loading…
                 </td>
               </tr>
@@ -155,7 +168,7 @@ export default function Wallet({ active }) {
 
             {!loading && cashLedger.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-white/40">
+                <td colSpan={3} className="px-4 py-6 text-white/40">
                   No cash ledger entries
                 </td>
               </tr>
@@ -166,14 +179,11 @@ export default function Wallet({ active }) {
                 <td className="px-4 py-3 text-white/85">
                   {row.event_type}
                 </td>
-                <td className="px-4 py-3 text-white/85">
-                  {row.direction === "credit" ? "+" : "−"}
+                <td className="px-4 py-3">
+                  {renderDirection(row.direction)}
                 </td>
                 <td className="px-4 py-3 text-white/85">
                   {formatPhp(row.amount_cents)}
-                </td>
-                <td className="px-4 py-3 text-white/60">
-                  {row.meta?.note || "—"}
                 </td>
               </tr>
             ))}
