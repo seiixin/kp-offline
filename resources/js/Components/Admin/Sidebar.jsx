@@ -110,20 +110,6 @@ export default function Sidebar({ active }) {
             </Icon>
           ),
         },
-        {
-          key: "commissions",
-          label: "Commissions",
-          href: route("console.agent.commissions"),
-          icon: (
-            <Icon>
-              <path d="M4 19V5" />
-              <path d="M8 19V9" />
-              <path d="M12 19v-6" />
-              <path d="M16 19v-9" />
-              <path d="M20 19V7" />
-            </Icon>
-          ),
-        },
       ],
     },
     {

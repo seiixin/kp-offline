@@ -8,6 +8,9 @@ use App\Models\LedgerEntry;
 use App\Models\OfflineWithdrawal;
 use App\Models\Wallet;
 use App\Services\AuditLogger;
+use App\Models\AuditLog;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use App\Services\MongoEconomyService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -109,13 +112,15 @@ public function store(
     MongoEconomyService $mongoEconomy
 ): JsonResponse {
     $agentId = $this->resolveAgentId();
+    $actorId = auth()->id();
     $data    = $request->validated();
 
     $mongoUserId = $data['mongo_user_id'];
     $diamonds    = (int) $data['diamonds_amount'];
+    $idemKey     = $data['idempotency_key'] ?? (string) Str::uuid();
 
     /* ===============================
-     | MINIMUM RULE
+     | MINIMUM RULE (UNCHANGED)
      =============================== */
     if ($diamonds < self::MIN_DIAMONDS) {
         return response()->json([
@@ -127,28 +132,36 @@ public function store(
      | SERVER-AUTHORITATIVE CONVERSION
      =============================== */
     $usd         = $diamonds / self::DIAMONDS_PER_USD;
-    $payoutCents = (int) round($usd * 100 * 56); // USD → PHP (server rate)
+    $payoutCents = (int) round($usd * 100 * 56); // USD → PHP
 
     try {
         $withdrawal = DB::transaction(function () use (
             $agentId,
+            $actorId,
             $mongoUserId,
             $diamonds,
             $payoutCents,
             $mongoEconomy,
-            $data
+            $idemKey
         ) {
             /* ===============================
-             | LOCK AGENT CASH WALLET (PHP)
+             | IDEMPOTENCY
+             =============================== */
+            if ($existing = OfflineWithdrawal::where('idempotency_key', $idemKey)->first()) {
+                return $existing;
+            }
+
+            /* ===============================
+             | LOCK AGENT CASH WALLET
              =============================== */
             $wallet = Wallet::where('owner_type', 'agent')
                 ->where('owner_id', $agentId)
-                ->whereRaw('UPPER(asset) = ?', ['PHP'])
+                ->whereRaw('UPPER(asset) = ?', [self::CURRENCY])
                 ->lockForUpdate()
                 ->firstOrFail();
 
             if ($wallet->available_cents < $payoutCents) {
-                throw new \RuntimeException('Insufficient agent cash liquidity.');
+                throw new RuntimeException('Insufficient agent cash liquidity.');
             }
 
             /* ===============================
@@ -175,7 +188,7 @@ public function store(
                 'payout_cents'    => $payoutCents,
                 'currency'        => self::CURRENCY,
                 'status'          => 'processing',
-                'idempotency_key' => $data['idempotency_key'] ?? (string) Str::uuid(),
+                'idempotency_key' => $idemKey,
             ]);
 
             /* ===============================
@@ -193,6 +206,9 @@ public function store(
                 ],
             ]);
 
+            /* ===============================
+             | AUDIT — SYSTEM LOGGER (EXISTING)
+             =============================== */
             AuditLogger::record(
                 'player_withdrawal_requested',
                 'offline_withdrawal',
@@ -204,9 +220,28 @@ public function store(
                 ]
             );
 
+            /* ===============================
+             | AUDIT — DATABASE (NEW, REQUIRED)
+             =============================== */
+            if (class_exists(\App\Models\AuditLog::class) &&
+                \Illuminate\Support\Facades\Schema::hasTable('audit_logs')) {
+
+                \App\Models\AuditLog::create([
+                    'actor_user_id' => $actorId,
+                    'action'        => 'offline_withdrawal.requested',
+                    'entity_type'   => 'offline_withdrawal',
+                    'entity_id'     => $withdrawal->id,
+                    'detail_json'   => [
+                        'mongo_user_id' => $mongoUserId,
+                        'diamonds'      => $diamonds,
+                        'php'           => $payoutCents / 100,
+                    ],
+                ]);
+            }
+
             return $withdrawal;
         });
-    } catch (\RuntimeException $e) {
+    } catch (RuntimeException $e) {
         return response()->json([
             'message' => $e->getMessage(),
         ], 422);
