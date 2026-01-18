@@ -7,6 +7,7 @@ use App\Http\Controllers\Agent\OfflineRechargeController;
 use App\Http\Controllers\Agent\UserDropdownController;
 use App\Http\Controllers\Agent\AgentWalletController;
 use App\Http\Controllers\Admin\OfflineWithdrawalController;
+use App\Http\Controllers\Admin\AgentsController;
 
 
 Route::get('/', function () {
@@ -30,7 +31,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // ADMIN
     Route::prefix('admin')->group(function () {
         Route::get('/overview', [PagesController::class, 'adminOverview'])->name('console.admin.overview');
-        Route::get('/agents', [PagesController::class, 'agents'])->name('console.admin.agents');
+        Route::get('/agents/index', [PagesController::class, 'agents'])->name('console.admin.agents');
         Route::get('/top-ups', [PagesController::class, 'topUps'])->name('console.admin.topups');
         Route::get('/audit-log', [PagesController::class, 'auditLog'])->name('console.admin.auditlog');
         Route::get('/withdrawals', [OfflineWithdrawalController::class, 'index']);
@@ -38,6 +39,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/wallets', [AdminWalletController::class, 'index']);
         Route::get('/wallets/{id}', [AdminWalletController::class, 'show']);
         Route::get('/wallets/{id}/ledger', [AdminWalletController::class, 'ledger']);
+
+        // AGENTS CONTROLLER
+        Route::get('/agents', [AgentsController::class, 'index']);
+        Route::post('/agents', [AgentsController::class, 'store']);
+        Route::put('/agents/{user}', [AgentsController::class, 'update']);
+        Route::delete('/agents/{user}', [AgentsController::class, 'destroy']);
+
+        Route::get('/agency-members-dropdown', [AgentsController::class, 'agencyMembersDropdown']);
         });
 
     Route::prefix('agent')->group(function () {
