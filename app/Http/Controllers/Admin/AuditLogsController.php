@@ -104,7 +104,7 @@ class AuditLogsController extends Controller
         $pdf = Pdf::loadView(
             'admin.audit_logs.pdf',
             ['logs' => $logs]
-        )->setPaper('a4', 'landscape');
+        )->setPaper('a4');
 
         return $pdf->download(
             'audit_logs_' . now()->format('Ymd_His') . '.pdf'

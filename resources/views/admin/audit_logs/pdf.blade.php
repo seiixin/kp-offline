@@ -11,18 +11,19 @@
         }
 
         h2 {
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
 
         .meta {
             font-size: 9px;
             color: #555;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
+            table-layout: fixed;
         }
 
         th {
@@ -38,6 +39,7 @@
             padding: 6px;
             border: 1px solid #ddd;
             vertical-align: top;
+            word-wrap: break-word;
         }
 
         .actor {
@@ -46,13 +48,12 @@
 
         .action {
             font-weight: bold;
-            color: #222;
         }
 
         .badge {
             display: inline-block;
             padding: 2px 6px;
-            font-size: 9px;
+            font-size: 8px;
             border-radius: 4px;
             background: #e5e7eb;
         }
@@ -63,6 +64,11 @@
 
         .money {
             font-weight: bold;
+        }
+
+        .muted {
+            font-size: 9px;
+            color: #666;
         }
     </style>
 </head>
@@ -77,12 +83,12 @@
 <table>
     <thead>
         <tr>
-            <th width="12%">Date</th>
-            <th width="12%">Actor</th>
-            <th width="16%">Action</th>
-            <th width="12%">Entity</th>
-            <th width="8%">ID</th>
-            <th width="40%">Details</th>
+            <th width="14%">Date</th>
+            <th width="14%">Actor</th>
+            <th width="18%">Action</th>
+            <th width="14%">Entity</th>
+            <th width="10%">ID</th>
+            <th width="30%">Details</th>
         </tr>
     </thead>
 
@@ -95,7 +101,7 @@
             <tr>
                 <td>
                     {{ $log->created_at->format('Y-m-d') }}<br>
-                    <small>{{ $log->created_at->format('H:i:s') }}</small>
+                    <span class="muted">{{ $log->created_at->format('H:i:s') }}</span>
                 </td>
 
                 <td class="actor">
@@ -132,7 +138,7 @@
                             Payout: ₱{{ number_format(($d['php'] ?? 0), 2) }}
                         </div>
                         @if (!empty($d['mongo_user_id']))
-                            <div class="detail-line">
+                            <div class="detail-line muted">
                                 Player ID: {{ $d['mongo_user_id'] }}
                             </div>
                         @endif
@@ -142,18 +148,13 @@
                         <div class="detail-line">
                             Coins: <strong>{{ number_format($d['coins'] ?? 0) }}</strong>
                         </div>
-                        @if (!empty($d['usd']))
-                            <div class="detail-line">
-                                USD Value: ${{ number_format($d['usd'], 2) }}
-                            </div>
-                        @endif
                         <div class="detail-line money">
                             PHP Value: ₱{{ number_format(($d['php'] ?? 0), 2) }}
                         </div>
 
                     {{-- FALLBACK --}}
                     @else
-                        <pre>{{ json_encode($d, JSON_PRETTY_PRINT) }}</pre>
+                        <pre class="muted">{{ json_encode($d, JSON_PRETTY_PRINT) }}</pre>
                     @endif
                 </td>
             </tr>
