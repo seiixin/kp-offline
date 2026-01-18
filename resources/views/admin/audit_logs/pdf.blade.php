@@ -1,37 +1,161 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
+
     <style>
-        body { font-family: DejaVu Sans, sans-serif; font-size: 10px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { border: 1px solid #999; padding: 6px; }
-        th { background: #eee; }
+        body {
+            font-family: DejaVu Sans, sans-serif;
+            font-size: 10px;
+            color: #111;
+        }
+
+        h2 {
+            margin-bottom: 8px;
+        }
+
+        .meta {
+            font-size: 9px;
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #f2f2f2;
+            font-weight: bold;
+            text-align: left;
+            padding: 6px;
+            border: 1px solid #ccc;
+            font-size: 9px;
+        }
+
+        td {
+            padding: 6px;
+            border: 1px solid #ddd;
+            vertical-align: top;
+        }
+
+        .actor {
+            font-weight: bold;
+        }
+
+        .action {
+            font-weight: bold;
+            color: #222;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            font-size: 9px;
+            border-radius: 4px;
+            background: #e5e7eb;
+        }
+
+        .detail-line {
+            margin-bottom: 2px;
+        }
+
+        .money {
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
 
-<h3>Audit Logs</h3>
+<h2>Audit Logs</h2>
+
+<div class="meta">
+    Generated at {{ now()->format('Y-m-d H:i:s') }}
+</div>
 
 <table>
     <thead>
         <tr>
-            <th>Date</th>
-            <th>Actor</th>
-            <th>Action</th>
-            <th>Entity</th>
-            <th>Entity ID</th>
-            <th>Details</th>
+            <th width="12%">Date</th>
+            <th width="12%">Actor</th>
+            <th width="16%">Action</th>
+            <th width="12%">Entity</th>
+            <th width="8%">ID</th>
+            <th width="40%">Details</th>
         </tr>
     </thead>
+
     <tbody>
         @foreach ($logs as $log)
+            @php
+                $d = $log->detail_json ?? [];
+            @endphp
+
             <tr>
-                <td>{{ $log->created_at }}</td>
-                <td>{{ $log->actor->name ?? 'System' }}</td>
-                <td>{{ $log->action }}</td>
-                <td>{{ $log->entity_type }}</td>
-                <td>{{ $log->entity_id }}</td>
-                <td>{{ json_encode($log->detail_json) }}</td>
+                <td>
+                    {{ $log->created_at->format('Y-m-d') }}<br>
+                    <small>{{ $log->created_at->format('H:i:s') }}</small>
+                </td>
+
+                <td class="actor">
+                    {{ $log->actor->name ?? 'System' }}
+                </td>
+
+                <td class="action">
+                    @if (str_contains($log->action, 'withdrawal'))
+                        Player Withdrawal
+                    @elseif (str_contains($log->action, 'recharge'))
+                        Offline Recharge
+                    @else
+                        {{ ucfirst(str_replace('_', ' ', $log->action)) }}
+                    @endif
+                </td>
+
+                <td>
+                    <span class="badge">
+                        {{ ucwords(str_replace('_', ' ', $log->entity_type)) }}
+                    </span>
+                </td>
+
+                <td>
+                    #{{ $log->entity_id }}
+                </td>
+
+                <td>
+                    {{-- WITHDRAWAL --}}
+                    @if ($log->entity_type === 'offline_withdrawal')
+                        <div class="detail-line">
+                            Diamonds: <strong>{{ number_format($d['diamonds'] ?? 0) }}</strong>
+                        </div>
+                        <div class="detail-line money">
+                            Payout: ₱{{ number_format(($d['php'] ?? 0), 2) }}
+                        </div>
+                        @if (!empty($d['mongo_user_id']))
+                            <div class="detail-line">
+                                Player ID: {{ $d['mongo_user_id'] }}
+                            </div>
+                        @endif
+
+                    {{-- RECHARGE --}}
+                    @elseif ($log->entity_type === 'offline_recharge')
+                        <div class="detail-line">
+                            Coins: <strong>{{ number_format($d['coins'] ?? 0) }}</strong>
+                        </div>
+                        @if (!empty($d['usd']))
+                            <div class="detail-line">
+                                USD Value: ${{ number_format($d['usd'], 2) }}
+                            </div>
+                        @endif
+                        <div class="detail-line money">
+                            PHP Value: ₱{{ number_format(($d['php'] ?? 0), 2) }}
+                        </div>
+
+                    {{-- FALLBACK --}}
+                    @else
+                        <pre>{{ json_encode($d, JSON_PRETTY_PRINT) }}</pre>
+                    @endif
+                </td>
             </tr>
         @endforeach
     </tbody>

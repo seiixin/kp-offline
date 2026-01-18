@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -100,7 +101,7 @@ class AuditLogsController extends Controller
     {
         $logs = $this->buildExportQuery($request)->get();
 
-        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView(
+        $pdf = Pdf::loadView(
             'admin.audit_logs.pdf',
             ['logs' => $logs]
         )->setPaper('a4', 'landscape');
@@ -109,6 +110,7 @@ class AuditLogsController extends Controller
             'audit_logs_' . now()->format('Ymd_His') . '.pdf'
         );
     }
+
 
     /* =====================================================
      | SHARED EXPORT QUERY
