@@ -85,6 +85,7 @@ export default function Wallet({ active }) {
 
   const cash = wallets?.cash;
   const diamonds = wallets?.diamonds;
+  const coins = wallets?.coins;
 
   return (
     <AdminLayout title="Agent Wallets" active={active}>
@@ -109,7 +110,7 @@ export default function Wallet({ active }) {
           subtitle="Commission · Game economy"
         >
           <div className="text-3xl font-semibold text-sky-300">
-            {loading ? "—" : formatDiamonds(diamonds?.available)}
+            {loading ? "—" : formatDiamonds(diamonds?.balance)}
           </div>
           <div className="mt-1 text-[11px] text-white/50">
             Reserved:{" "}
@@ -117,21 +118,17 @@ export default function Wallet({ active }) {
           </div>
         </Card>
 
-        {/* ACTIONS */}
-        <Card title="ACTIONS">
-          <div className="flex gap-2">
-            <button
-              disabled
-              className="rounded-xl bg-white/10 px-4 py-2 text-[12px] text-white/70"
-            >
-              Add cash
-            </button>
-            <button
-              disabled
-              className="rounded-xl bg-white/10 px-4 py-2 text-[12px] text-white/70"
-            >
-              Request payout
-            </button>
+        {/* COINS WALLET */}
+        <Card
+          title="COINS WALLET"
+          subtitle="Game rewards · Economy"
+        >
+          <div className="text-3xl font-semibold text-yellow-300">
+            {loading ? "—" : formatDiamonds(coins?.balance)}
+          </div>
+          <div className="mt-1 text-[11px] text-white/50">
+            Reserved:{" "}
+            {loading ? "—" : formatDiamonds(coins?.reserved)}
           </div>
         </Card>
       </div>

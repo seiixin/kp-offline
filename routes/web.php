@@ -9,7 +9,7 @@ use App\Http\Controllers\Agent\AgentWalletController;
 use App\Http\Controllers\Admin\OfflineWithdrawalController;
 use App\Http\Controllers\Admin\AgentsController;
 use App\Http\Controllers\Admin\AuditLogsController;
-
+use App\Http\Controllers\Admin\TopupController;
 
 Route::get('/', function () {
     return redirect()->route('console.dashboard');
@@ -40,7 +40,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/wallets', [AdminWalletController::class, 'index']);
         Route::get('/wallets/{id}', [AdminWalletController::class, 'show']);
         Route::get('/wallets/{id}/ledger', [AdminWalletController::class, 'ledger']);
-
+        
         // AGENTS CONTROLLER
         Route::get('/agents', [AgentsController::class, 'index']);
         Route::post('/agents', [AgentsController::class, 'store']);
@@ -53,6 +53,19 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/audit-logs', [AuditLogsController::class, 'index']);
         Route::get('/audit-logs/export/excel', [AuditLogsController::class, 'exportExcel']);
         Route::get('/audit-logs/export/pdf', [AuditLogsController::class, 'exportPdf']);
+
+        // TOP UP CONTROLLER
+        // Route to retrieve Stripe public and secret keys (GET)
+        Route::get('/stripe-keys', [TopupController::class, 'getStripeKeys'])
+            ->name('admin.stripe.keys'); // Admin retrieves the Stripe keys
+
+        // Route to initiate Stripe top-up for an agent (POST)
+        Route::post('/topups/{agentId}/stripe', [TopupController::class, 'adminTopUp'])
+            ->name('admin.topups.stripe'); // Admin initiates top-up via Stripe
+
+        // Route to confirm Stripe top-up after payment is completed (POST)
+        Route::post('/topups/{agentId}/stripe-complete', [TopupController::class, 'completeTopUp'])
+            ->name('admin.topups.stripe.complete'); // Admin confirms top-up after payment
         });
 
     Route::prefix('agent')->group(function () {

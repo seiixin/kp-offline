@@ -8,6 +8,8 @@ use App\Models\LedgerEntry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use App\Services\MongoEconomyService;
+
 
 class AgentWalletController extends Controller
 {
@@ -15,10 +17,19 @@ class AgentWalletController extends Controller
      | HELPERS
      ===================================================== */
 
+    /**
+     * Resolve the logged-in agent ID
+     * The logged-in user IS the agent
+     */
     protected function resolveAgentId(): int
     {
         $user = auth()->user();
-        return (int) ($user->agent_id ?? $user->id);
+
+        if (!$user) {
+            abort(401, 'Unauthenticated.');
+        }
+
+        return (int) $user->id;
     }
 
     protected function cashWallet(int $agentId): Wallet
@@ -62,17 +73,29 @@ class AgentWalletController extends Controller
      | GET /agent/wallet/overview
      | Used by UI cards (CASH + DIAMONDS)
      ===================================================== */
-    public function overview(): JsonResponse
+    public function overview(MongoEconomyService $mongo): JsonResponse
     {
         $agentId = $this->resolveAgentId();
+        $user    = auth()->user();
 
+        /* ===============================
+        | 1. CASH (MYSQL)
+        =============================== */
         $wallets = Wallet::where('owner_type', 'agent')
             ->where('owner_id', $agentId)
             ->get()
             ->keyBy(fn ($w) => strtoupper($w->asset));
 
         $cash = $wallets->get('PHP');
-        $diamonds = $wallets->get('DIAMONDS');
+
+        /* ===============================
+        | 2. COINS + DIAMONDS (MONGODB)
+        =============================== */
+        $mongoWallet = null;
+
+        if ($user && $user->mongo_user_id) {
+            $mongoWallet = $mongo->getLoggedInAgentWallet($user->mongo_user_id);
+        }
 
         return response()->json([
             'data' => [
@@ -82,11 +105,15 @@ class AgentWalletController extends Controller
                     'reserved_cents'  => $cash->reserved_cents,
                 ] : null,
 
-                'diamonds' => $diamonds ? [
-                    'asset'     => 'DIAMONDS',
-                    'available' => $diamonds->available_cents,
-                    'reserved'  => $diamonds->reserved_cents,
-                ] : null,
+                'diamonds' => [
+                    'asset'   => 'DIAMONDS',
+                    'balance' => $mongoWallet['wallet']['diamonds'] ?? 0,
+                ],
+
+                'coins' => [
+                    'asset'   => 'COINS',
+                    'balance' => $mongoWallet['wallet']['coins'] ?? 0,
+                ],
             ],
         ]);
     }

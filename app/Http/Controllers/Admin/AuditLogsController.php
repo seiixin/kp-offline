@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Maatwebsite\Excel\Facades\Excel;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -97,19 +98,47 @@ class AuditLogsController extends Controller
     /* =====================================================
      | GET /admin/audit-logs/export/pdf
      ===================================================== */
-    public function exportPdf(Request $request)
-    {
-        $logs = $this->buildExportQuery($request)->get();
+public function exportPdf(Request $request)
+{
+    $logs = $this->buildExportQuery($request)->get();
 
-        $pdf = Pdf::loadView(
-            'admin.audit_logs.pdf',
-            ['logs' => $logs]
-        )->setPaper('a4');
+    /* ===============================
+     | COLLECT MONGO IDS
+     =============================== */
+    $mongoIds = $logs
+        ->pluck('detail_json.mongo_user_id')
+        ->filter()
+        ->unique()
+        ->values();
 
-        return $pdf->download(
-            'audit_logs_' . now()->format('Ymd_His') . '.pdf'
-        );
+    /* ===============================
+     | RESOLVE PLAYER NAMES (MONGO)
+     =============================== */
+    $players = [];
+    $mongo = app(\App\Services\MongoEconomyService::class);
+
+    foreach ($mongoIds as $mongoId) {
+        $p = $mongo->getUserBasicByMongoId($mongoId);
+        if ($p) {
+            $players[$mongoId] = $p['full_name']
+                ?? $p['username']
+                ?? null;
+        }
     }
+
+    $pdf = Pdf::loadView(
+        'admin.audit_logs.pdf',
+        [
+            'logs'    => $logs,
+            'players' => $players, // 👈 PASS TO BLADE
+        ]
+    )->setPaper('a4'); // portrait
+
+    return $pdf->download(
+        'audit_logs_' . now()->format('Ymd_His') . '.pdf'
+    );
+}
+
 
 
     /* =====================================================

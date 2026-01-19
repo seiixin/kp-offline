@@ -137,11 +137,12 @@
                         <div class="detail-line money">
                             Payout: ₱{{ number_format(($d['php'] ?? 0), 2) }}
                         </div>
-                        @if (!empty($d['mongo_user_id']))
-                            <div class="detail-line muted">
-                                Player ID: {{ $d['mongo_user_id'] }}
-                            </div>
-                        @endif
+                    @if (!empty($d['mongo_user_id']) && !empty($players[$d['mongo_user_id']]))
+                        <div class="detail-line muted">
+                            Player: {{ $players[$d['mongo_user_id']] }}
+                        </div>
+                    @endif
+
 
                     {{-- RECHARGE --}}
                     @elseif ($log->entity_type === 'offline_recharge')

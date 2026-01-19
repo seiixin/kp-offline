@@ -9,21 +9,26 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            // MongoDB ObjectId is 24-char hex string
-            $table
-                ->string('mongo_user_id', 24)
-                ->nullable()
-                ->after('id');
+            // Check if the 'mongo_user_id' column doesn't already exist
+            if (!Schema::hasColumn('users', 'mongo_user_id')) {
+                // MongoDB ObjectId is 24-char hex string
+                $table
+                    ->string('mongo_user_id', 24)
+                    ->nullable()
+                    ->after('id');
 
-            $table->unique('mongo_user_id', 'users_mongo_user_id_unique');
+                $table->unique('mongo_user_id', 'users_mongo_user_id_unique');
+            }
         });
     }
 
     public function down(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->dropUnique('users_mongo_user_id_unique');
-            $table->dropColumn('mongo_user_id');
+            if (Schema::hasColumn('users', 'mongo_user_id')) {
+                $table->dropUnique('users_mongo_user_id_unique');
+                $table->dropColumn('mongo_user_id');
+            }
         });
     }
 };

@@ -331,4 +331,50 @@ public function listAgencyMembersForDropdown(array $opts = []): array
             'idempotent' => false,
         ];
     }
+    /* =====================================================
+    | LOGGED-IN AGENT WALLET
+    | SOURCE: agencymembers
+    | LINK: users.mongo_user_id -> agencymembers._id
+    ===================================================== */
+    public function getLoggedInAgentWallet(string $mongoUserId): ?array
+    {
+        try {
+            $doc = $this->agencyMembers()->findOne(
+                ['_id' => $this->toObjectId($mongoUserId)],
+                [
+                    'projection' => [
+                        'FullName'           => 1,
+                        'userIdentification' => 1,
+                        'Coins'              => 1,
+                        'Diamonds'           => 1,
+                        'role'               => 1,
+                    ],
+                ]
+            );
+
+            if (!$doc) {
+                return null;
+            }
+
+            if ($doc instanceof BSONDocument) {
+                $doc = $doc->getArrayCopy();
+            }
+
+            return [
+                'mongo_user_id' => (string) $doc['_id'],
+                'name' => $doc['FullName']
+                    ?? $doc['userIdentification']
+                    ?? 'Unknown Agent',
+                'role' => $doc['role'] ?? 'agent',
+                'wallet' => [
+                    'coins'    => (int) ($doc['Coins'] ?? 0),
+                    'diamonds' => (int) ($doc['Diamonds'] ?? 0),
+                ],
+                'type' => 'agent',
+            ];
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
 }
