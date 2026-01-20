@@ -6,6 +6,7 @@ use App\Http\Controllers\Agent\AgentDashboardController;
 use App\Http\Controllers\Agent\OfflineRechargeController;
 use App\Http\Controllers\Agent\UserDropdownController;
 use App\Http\Controllers\Agent\AgentWalletController;
+use App\Http\Controllers\Admin\AdminWalletController;
 use App\Http\Controllers\Admin\OfflineWithdrawalController;
 use App\Http\Controllers\Admin\AgentsController;
 use App\Http\Controllers\Admin\AuditLogsController;
@@ -40,7 +41,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/wallets', [AdminWalletController::class, 'index']);
         Route::get('/wallets/{id}', [AdminWalletController::class, 'show']);
         Route::get('/wallets/{id}/ledger', [AdminWalletController::class, 'ledger']);
-        
+
         // AGENTS CONTROLLER
         Route::get('/agents', [AgentsController::class, 'index']);
         Route::post('/agents', [AgentsController::class, 'store']);

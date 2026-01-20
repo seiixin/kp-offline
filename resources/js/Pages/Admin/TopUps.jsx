@@ -3,6 +3,7 @@ import AdminLayout from "@/Layouts/AdminLayout";
 import axios from "axios";
 import { Elements, CardElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
+import Swal from "sweetalert2";
 
 // Replace with your actual public key from Stripe
 const stripePromise = loadStripe("pk_test_51S3N5rDXO6DeN2FzLZoKtX1WdAI7egygpJcLlpM0lC0xrUANM9fEWUI7vMBD3ClZhWj4DdVN9Hd8UOI4EX3EMobL00YUI2fuvu"); 
@@ -32,48 +33,76 @@ function TopUpForm({ selectedAgent, topUpAmount, closeModal }) {
   const stripe = useStripe();
   const elements = useElements();
 
-const handlePayment = async () => {
-  if (!stripe || !elements) {
-    return;
-  }
+  const handlePayment = async () => {
+    if (!stripe || !elements) {
+      return;
+    }
 
-  try {
-    const response = await axios.post(`/admin/topups/${selectedAgent}/stripe`, {
-      amount: topUpAmount,
-    });
-
-    const { clientSecret } = response.data;
-
-    // Get the CardElement
-    const cardElement = elements.getElement(CardElement);
-
-    const { error, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
-      payment_method: {
-        card: cardElement,
-        billing_details: {
-          name: "Cardholder Name", // You can get the name dynamically from the input if needed
-        },
-      },
-    });
-
-    if (error) {
-      console.error("Payment failed:", error.message);
-      alert("Payment failed: " + error.message);
-    } else if (paymentIntent.status === "succeeded") {
-      alert("Top-up successful!");
-
-      // Call the backend to update the transaction status to 'completed'
-      await axios.post(`/admin/topups/${selectedAgent}/stripe-complete`, {
-        paymentIntentId: paymentIntent.id, // Send paymentIntentId to complete the transaction
+    try {
+      const response = await axios.post(`/admin/topups/${selectedAgent}/stripe`, {
+        amount: topUpAmount,
       });
 
-      closeModal(); // Close the modal after successful payment and status update
+      const { clientSecret, reference } = response.data;
+
+      if (!clientSecret || !reference) {
+        Swal.fire({
+          icon: 'error',
+          title: 'Payment failed',
+          text: 'Missing necessary details.',
+        });
+        return;
+      }
+
+      const cardElement = elements.getElement(CardElement);
+
+      const { error, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
+        payment_method: {
+          card: cardElement,
+          billing_details: {
+            name: "Cardholder Name",
+          },
+        },
+      });
+
+      if (error) {
+        Swal.fire({
+          icon: 'error',
+          title: 'Payment failed',
+          text: error.message,
+        });
+      } else if (paymentIntent.status === "succeeded") {
+        Swal.fire({
+          icon: 'success',
+          title: 'Top-up successful!',
+          text: 'Your payment was successful.',
+        }).then(async () => {
+          // Send the reference and status to the backend (no need for paymentIntentId)
+          const updateResponse = await axios.post(`/admin/topups/${selectedAgent}/stripe-complete`, {
+            reference: reference,   // Pass reference from top-up transaction
+            status: 'succeeded',     // Payment status ('succeeded' or 'failed')
+          });
+
+          if (updateResponse.data.error) {
+            Swal.fire({
+              icon: 'error',
+              title: 'Failed to update transaction status',
+              text: updateResponse.data.error,
+            });
+          } else {
+            // Optionally, handle additional tasks like updating the UI, etc.
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error processing payment:", error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Something went wrong',
+        text: 'An error occurred during the payment process.',
+      });
     }
-  } catch (error) {
-    console.error("Error processing payment:", error);
-    alert("Something went wrong during the top-up process.");
-  }
-};
+  };
 
   return (
     <div>
@@ -114,7 +143,11 @@ export default function TopUps({ active }) {
   // Function to handle opening the modal
   const openModal = () => {
     if (!selectedAgent || !topUpAmount) {
-      alert("Please select an agent and enter an amount.");
+      Swal.fire({
+        icon: 'warning',
+        title: 'Missing Information',
+        text: 'Please select an agent and enter an amount.',
+      });
       return;
     }
     setIsModalOpen(true);

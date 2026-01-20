@@ -38,60 +38,62 @@ class TopupController extends Controller
      | Admin Top-Up an Agent's Wallet (Stripe Integration)
      | POST /admin/topups/agent/{agentId}/stripe
      ===================================================== */
-    public function adminTopUp(Request $request, $agentId)
-    {
-        // Validation: Make sure the amount is valid
-        $request->validate([
-            'amount' => 'required|numeric|min:0.01',
-        ]);
+public function adminTopUp(Request $request, $agentId)
+{
+    $request->validate([
+        'amount' => 'required|numeric|min:0.01',
+    ]);
 
-        $amount = $request->input('amount');
-        $currency = 'usd'; // You can change this to the desired currency (e.g., PHP)
+    $amount = $request->input('amount');
+    $currency = 'usd';
 
+    // Log the incoming request
+    Log::info("Received top-up request", ['amount' => $amount, 'agentId' => $agentId]);
+
+    try {
         // Get Stripe keys from the database
         $stripeKeys = $this->getStripeKeys();
-        
+
         if ($stripeKeys['private'] == null || $stripeKeys['public'] == null) {
-            return response()->json([
-                'error' => 'Stripe keys are missing or invalid.',
-            ], 500);
+            Log::error("Stripe keys are missing");
+            return response()->json(['error' => 'Stripe keys are missing or invalid.'], 500);
         }
 
-        // Set Stripe's secret key for backend interaction
         Stripe::setApiKey($stripeKeys['private']);
 
-        try {
-            // Create a PaymentIntent (Stripe's way to handle payments)
-            $paymentIntent = PaymentIntent::create([
-                'amount'   => $amount * 100, // Convert to cents (Stripe requires amount in cents)
-                'currency' => $currency,
-                'metadata' => ['agent_id' => $agentId], // Metadata for the agent
-            ]);
+        // Create the PaymentIntent
+        $paymentIntent = PaymentIntent::create([
+            'amount' => $amount * 100,
+            'currency' => $currency,
+            'metadata' => ['agent_id' => $agentId],
+        ]);
 
-            // Save the top-up transaction as 'pending' initially
-            $topupTransaction = TopupTransaction::create([
-                'agent_id'      => $agentId,
-                'reference'     => 'TOPUP-' . uniqid(),
-                'amount'        => $amount,
-                'status'        => 'pending', // Transaction status is 'pending' until payment is confirmed
-                'payment_method' => 'stripe', // Payment method used
-            ]);
+        // Log PaymentIntent creation success
+        Log::info("Created PaymentIntent", ['paymentIntentId' => $paymentIntent->id]);
 
-            // Send the public key, clientSecret, and other relevant information to the frontend
-            return response()->json([
-                'clientSecret' => $paymentIntent->client_secret, // Pass the client secret to frontend to complete payment
-                'paymentIntentId' => $paymentIntent->id, // Send the PaymentIntent ID as well
-                'publicKey' => $stripeKeys['public'], // Include the public key in the response
-                'topupTransaction' => $topupTransaction, // Return the transaction object for tracking
-            ]);
-        } catch (\Exception $e) {
-            // Log Stripe API errors
-            Log::error('Stripe PaymentIntent creation failed', ['error' => $e->getMessage()]);
-            return response()->json([
-                'error' => 'Payment creation failed: ' . $e->getMessage(),
-            ], 500);
-        }
+        $topupTransaction = TopupTransaction::create([
+            'agent_id' => $agentId,
+            'reference' => 'TOPUP-' . uniqid(),
+            'amount' => $amount,
+            'status' => 'pending',
+            'payment_method' => 'stripe',
+        ]);
+
+        return response()->json([
+            'clientSecret' => $paymentIntent->client_secret,
+            'reference' => $topupTransaction->reference, // Pass the reference for frontend
+            'paymentIntentId' => $paymentIntent->id,
+        ]);
+    } catch (\Stripe\Exception\ApiErrorException $e) {
+        // Log Stripe-specific error
+        Log::error("Stripe API error", ['error' => $e->getMessage()]);
+        return response()->json(['error' => 'Stripe payment failed: ' . $e->getMessage()], 500);
+    } catch (\Exception $e) {
+        // Log general error
+        Log::error("General error in processing top-up", ['error' => $e->getMessage()]);
+        return response()->json(['error' => 'Something went wrong.'], 500);
     }
+}
 
     /* =====================================================
      | Handle successful payment and update the agent's wallet
@@ -99,88 +101,55 @@ class TopupController extends Controller
      ===================================================== */
 public function completeTopUp(Request $request, $agentId)
 {
-    // Validate the incoming request for paymentIntentId
+    // Validate the reference and the status from the frontend
     $request->validate([
-        'paymentIntentId' => 'required|string', // Ensure paymentIntentId is provided
+        'reference' => 'required|string',  // Reference to identify the top-up transaction
+        'status' => 'required|string',     // The status passed (succeeded or failed)
     ]);
 
-    $paymentIntentId = $request->input('paymentIntentId');
+    $reference = $request->input('reference');
+    $status = $request->input('status');  // Status passed from frontend (e.g., 'succeeded')
 
-    // Retrieve Stripe keys from the database or fallback to .env
-    $stripeKeys = $this->getStripeKeys();
+    // Fetch the top-up transaction by reference
+    $topupTransaction = TopupTransaction::where('reference', $reference)->first();
 
-    if (!$stripeKeys['private'] || !$stripeKeys['public']) {
-        return response()->json([
-            'error' => 'Stripe private/public keys are missing or invalid.',
-        ], 500);
+    if (!$topupTransaction) {
+        return response()->json(['error' => 'Top-up transaction not found.'], 404);
     }
 
-    // Set the Stripe API key
-    Stripe::setApiKey($stripeKeys['private']); // Use secret key for backend operations
+    // Update the transaction based on the payment status
+    if ($status === 'succeeded') {
+        $topupTransaction->status = 'completed';
+    } else {
+        $topupTransaction->status = 'failed';
+    }
 
-    try {
-        // Retrieve the PaymentIntent object from Stripe using the payment intent ID
-        $paymentIntent = PaymentIntent::retrieve($paymentIntentId);
+    $topupTransaction->save();
 
-        // Log payment intent status for debugging
-        Log::info("PaymentIntent Status: {$paymentIntent->status}");
-        Log::info("PaymentIntent ID: {$paymentIntent->id}");
+    // Optionally, update the agent's wallet balance if needed
+    if ($status === 'succeeded') {
+        // Check if the wallet exists for the agent, create if not
+        $wallet = Wallet::where('owner_type', 'agent')
+            ->where('owner_id', $agentId)
+            ->first();
 
-        // Proceed if the payment was successful
-        if ($paymentIntent->status === 'succeeded') {
-            // Fetch the agent's PHP wallet
-            $wallet = Wallet::where('owner_type', 'agent')
-                ->where('owner_id', $agentId)
-                ->whereRaw('UPPER(asset) = ?', ['PHP'])
-                ->firstOrFail();
-
-            // Calculate the amount in dollars (Stripe returns amount in cents)
-            $amount = $paymentIntent->amount_received / 100; // Convert from cents to dollars
-
-            // Add the top-up amount to the wallet
-            $wallet->available_cents += $amount * 100; // Convert to cents
-            $wallet->reserved_cents += $amount * 100; // Add to reserved portion if needed
-            $wallet->save(); // Save the updated wallet balance
-
-            // Retrieve the top-up transaction to update its status
-            $topupTransaction = TopupTransaction::where('reference', 'TOPUP-' . $paymentIntent->metadata['agent_id'])
-                ->first();
-
-            if (!$topupTransaction) {
-                return response()->json([
-                    'error' => 'Top-up transaction not found.',
-                ], 404);
-            }
-
-            // Update the top-up transaction status to 'completed'
-            $topupTransaction->status = 'completed';
-            $topupTransaction->save();
-
-            // Return success response with updated balance information
-            return response()->json([
-                'message' => 'Top-up successful.',
-                'data' => [
-                    'agent_id' => $agentId,
-                    'topup_amount' => $amount,
-                    'new_balance' => $wallet->available_cents / 100, // Convert back to dollars for display
-                ],
-            ], 200);
-        } else {
-            // If payment failed, return an error response
-            return response()->json(['error' => 'Payment failed. Please try again.'], 400);
+        if (!$wallet) {
+            // If the wallet does not exist, create a new one
+            $wallet = Wallet::create([
+                'owner_type' => 'agent',
+                'owner_id' => $agentId,
+                'asset' => 'PHP',  // or other asset type
+                'available_cents' => 0,  // initial balance
+                'reserved_cents' => 0,   // initial reserved amount
+            ]);
         }
-    } catch (\Stripe\Exception\ApiErrorException $e) {
-        // Stripe API specific error handling
-        Log::error('Stripe API Error: ' . $e->getMessage());
-        return response()->json([
-            'error' => 'Stripe API Error: ' . $e->getMessage(),
-        ], 500);
-    } catch (\Exception $e) {
-        // General error handling for any other issues
-        Log::error('General Error: ' . $e->getMessage());
-        return response()->json([
-            'error' => 'An unexpected error occurred: ' . $e->getMessage(),
-        ], 500);
+
+        // Update wallet balance
+        $wallet->available_cents += $topupTransaction->amount * 100; // Update balance in cents
+        $wallet->save();
     }
+
+    return response()->json(['message' => 'Transaction status updated successfully.']);
 }
+
 }

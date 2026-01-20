@@ -18,7 +18,7 @@ class Wallet extends Model
      * Add 'user_id' to fillable so mass assignment includes it.
      */
     protected $fillable = [
-        'user_id',          // ✅ required by your DB schema
+        'user_id',          
         'owner_type',
         'owner_id',
         'asset',
