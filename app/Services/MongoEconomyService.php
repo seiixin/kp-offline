@@ -260,121 +260,125 @@ public function listAgencyMembersForDropdown(array $opts = []): array
      | CREDIT PLAYER COINS (RECHARGE)
      | ⚠️ PLAYER ONLY — DO NOT TOUCH
      ===================================================== */
-    public function creditCoins(array $payload): array
-    {
-        $mongoUserId    = (string) ($payload['mongo_user_id'] ?? '');
-        $coins          = (int) ($payload['coins_amount'] ?? 0);
-        $idempotencyKey = (string) ($payload['idempotency_key'] ?? '');
-        $meta           = (array) ($payload['meta'] ?? []);
-        $source         = $payload['source'] ?? 'offline_agent_recharge';
+public function creditCoins(array $payload): array
+{
+    $mongoUserId = (string) ($payload['mongo_user_id'] ?? '');
+    $coins = (int) ($payload['coins_amount'] ?? 0);
+    $idempotencyKey = (string) ($payload['idempotency_key'] ?? '');
+    $source = $payload['source'] ?? 'agent_top_up';
 
-        if ($mongoUserId === '' || $idempotencyKey === '') {
-            throw new \InvalidArgumentException('mongo_user_id and idempotency_key are required.');
-        }
+    if ($mongoUserId === '' || $idempotencyKey === '') {
+        throw new \InvalidArgumentException('mongo_user_id and idempotency_key are required.');
+    }
 
-        if ($coins <= 0) {
-            return [
-                'transactionRef' => $idempotencyKey,
-                'status' => 'successful',
-                'idempotent' => true,
-            ];
-        }
-
-        $existing = $this->transactions()->findOne(
-            ['transactionRef' => $idempotencyKey],
-            ['projection' => ['status' => 1]]
-        );
-
-        if ($existing) {
-            return [
-                'transactionRef' => $idempotencyKey,
-                'status' => $existing['status'] ?? 'successful',
-                'idempotent' => true,
-            ];
-        }
-
-        $oid = $this->toObjectId($mongoUserId);
-
-        $txn = $this->transactions()->insertOne([
-            'transactionRef' => $idempotencyKey,
-            'userId' => $oid,
-            'status' => 'pending',
-            'coinsCredited' => $coins,
-            'source' => $source,
-            'meta' => $meta,
-            'createdAt' => now()->toDateTimeString(),
-            'updatedAt' => now()->toDateTimeString(),
-        ]);
-
-        $res = $this->players()->updateOne(
-            ['_id' => $oid],
-            ['$inc' => ['Coins' => $coins]]
-        );
-
-        if ($res->getModifiedCount() !== 1) {
-            $this->transactions()->updateOne(
-                ['_id' => $txn->getInsertedId()],
-                ['$set' => ['status' => 'failed']]
-            );
-
-            throw new RuntimeException('User not found.');
-        }
-
-        $this->transactions()->updateOne(
-            ['_id' => $txn->getInsertedId()],
-            ['$set' => ['status' => 'successful']]
-        );
-
+    if ($coins <= 0) {
         return [
             'transactionRef' => $idempotencyKey,
             'status' => 'successful',
-            'idempotent' => false,
+            'idempotent' => true,
         ];
     }
+
+    // Check if the transaction already exists to avoid duplicates
+    $existing = $this->transactions()->findOne(
+        ['transactionRef' => $idempotencyKey],
+        ['projection' => ['status' => 1]]
+    );
+
+    if ($existing) {
+        return [
+            'transactionRef' => $idempotencyKey,
+            'status' => $existing['status'] ?? 'successful',
+            'idempotent' => true,
+        ];
+    }
+
+    $oid = $this->toObjectId($mongoUserId); // Convert to MongoDB ObjectId
+
+    // Insert a new transaction record
+    $txn = $this->transactions()->insertOne([
+        'transactionRef' => $idempotencyKey,
+        'userId' => $oid,
+        'status' => 'pending',
+        'coinsCredited' => $coins,
+        'source' => $source,
+        'createdAt' => now()->toDateTimeString(),
+        'updatedAt' => now()->toDateTimeString(),
+    ]);
+
+    // Update the coins field in MongoDB
+    $res = $this->agencymembers()->updateOne(
+        ['_id' => $oid],
+        ['$inc' => ['Coins' => $coins]]  // Increment the Coins field by the top-up amount
+    );
+
+    if ($res->getModifiedCount() !== 1) {
+        $this->transactions()->updateOne(
+            ['_id' => $txn->getInsertedId()],
+            ['$set' => ['status' => 'failed']]
+        );
+
+        throw new RuntimeException('Agent not found or MongoDB update failed.');
+    }
+
+    // Update the transaction status to successful
+    $this->transactions()->updateOne(
+        ['_id' => $txn->getInsertedId()],
+        ['$set' => ['status' => 'successful']]
+    );
+
+    return [
+        'transactionRef' => $idempotencyKey,
+        'status' => 'successful',
+        'idempotent' => false,
+    ];
+}
+
     /* =====================================================
     | LOGGED-IN AGENT WALLET
     | SOURCE: agencymembers
     | LINK: users.mongo_user_id -> agencymembers._id
     ===================================================== */
-    public function getLoggedInAgentWallet(string $mongoUserId): ?array
-    {
-        try {
-            $doc = $this->agencyMembers()->findOne(
-                ['_id' => $this->toObjectId($mongoUserId)],
-                [
-                    'projection' => [
-                        'FullName'           => 1,
-                        'userIdentification' => 1,
-                        'Coins'              => 1,
-                        'Diamonds'           => 1,
-                        'role'               => 1,
-                    ],
-                ]
-            );
+public function getLoggedInAgentWallet(string $mongoUserId): ?array
+{
+    try {
+        // Convert the mongoUserId to ObjectId
+        $oid = new \MongoDB\BSON\ObjectId($mongoUserId); // Ensuring it's an ObjectId
 
-            if (!$doc) {
-                return null;
-            }
-
-            if ($doc instanceof BSONDocument) {
-                $doc = $doc->getArrayCopy();
-            }
-
-            return [
-                'mongo_user_id' => (string) $doc['_id'],
-                'name' => $doc['FullName']
-                    ?? $doc['userIdentification']
-                    ?? 'Unknown Agent',
-                'role' => $doc['role'] ?? 'agent',
-                'wallet' => [
-                    'coins'    => (int) ($doc['Coins'] ?? 0),
-                    'diamonds' => (int) ($doc['Diamonds'] ?? 0),
+        // Query the MongoDB collection
+        $doc = $this->agencyMembers()->findOne(
+            ['_id' => $oid],  // Using ObjectId for querying
+            [
+                'projection' => [
+                    'FullName'           => 1,
+                    'userIdentification' => 1,
+                    'Coins'              => 1,
+                    'Diamonds'           => 1,
+                    'role'               => 1,
                 ],
-                'type' => 'agent',
-            ];
-        } catch (\Throwable $e) {
+            ]
+        );
+
+        if (!$doc) {
             return null;
         }
-    }
 
+        if ($doc instanceof BSONDocument) {
+            $doc = $doc->getArrayCopy();
+        }
+
+        return [
+            'mongo_user_id' => (string) $doc['_id'],
+            'name' => $doc['FullName'] ?? $doc['userIdentification'] ?? 'Unknown Agent',
+            'role' => $doc['role'] ?? 'agent',
+            'wallet' => [
+                'coins'    => (int) ($doc['Coins'] ?? 0),
+                'diamonds' => (int) ($doc['Diamonds'] ?? 0),
+            ],
+            'type' => 'agent',
+        ];
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
 }
