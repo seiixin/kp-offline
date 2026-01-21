@@ -82,7 +82,7 @@ Route::middleware(['auth', 'verified'])->group(function () {
         Route::get('/wallet/overview', [AgentWalletController::class, 'overview']);
 
         Route::get('/wallet/cash-summary', [AgentWalletController::class, 'cashSummary']);
-        Route::get('/wallet/cash-ledger',  [AgentWalletController::class, 'cashLedger']);
+        Route::get('/wallet/coins-ledger',  [AgentWalletController::class, 'coinsLedger']);
 
         Route::post('/wallets/ensure-diamonds', [
             AgentWalletController::class,

@@ -19,7 +19,6 @@ class LedgerEntry extends Model
     public const DIR_CREDIT = 'credit';
 
     protected $fillable = [
-        'wallet_id',
         'event_type',
         'event_id',
         'direction',
@@ -29,7 +28,6 @@ class LedgerEntry extends Model
     ];
 
     protected $casts = [
-        'wallet_id'    => 'integer',
         'event_id'     => 'integer',
         'amount_cents' => 'integer',
         'meta'         => 'array',

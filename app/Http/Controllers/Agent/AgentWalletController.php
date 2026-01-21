@@ -10,7 +10,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Services\MongoEconomyService;
 
-
 class AgentWalletController extends Controller
 {
     /* =====================================================
@@ -18,8 +17,7 @@ class AgentWalletController extends Controller
      ===================================================== */
 
     /**
-     * Resolve the logged-in agent ID
-     * The logged-in user IS the agent
+     * Logged-in user IS the agent
      */
     protected function resolveAgentId(): int
     {
@@ -32,46 +30,17 @@ class AgentWalletController extends Controller
         return (int) $user->id;
     }
 
-    protected function cashWallet(int $agentId): Wallet
+    protected function cashWallet(int $agentId): ?Wallet
     {
         return Wallet::where('owner_type', 'agent')
             ->where('owner_id', $agentId)
             ->whereRaw('UPPER(asset) = ?', ['PHP'])
-            ->firstOrFail();
-    }
-
-    protected function diamondsWallet(int $agentId): Wallet
-    {
-        return Wallet::where('owner_type', 'agent')
-            ->where('owner_id', $agentId)
-            ->whereRaw('UPPER(asset) = ?', ['DIAMONDS'])
-            ->firstOrFail();
-    }
-
-    /* =====================================================
-     | GET /agent/wallets
-     | Legacy / dropdown support (ALL wallets)
-     ===================================================== */
-    public function index(): JsonResponse
-    {
-        $agentId = $this->resolveAgentId();
-
-        return response()->json([
-            'data' => Wallet::where('owner_type', 'agent')
-                ->where('owner_id', $agentId)
-                ->orderBy('id')
-                ->get([
-                    'id',
-                    'asset',
-                    'available_cents',
-                    'reserved_cents',
-                ]),
-        ]);
+            ->first();
     }
 
     /* =====================================================
      | GET /agent/wallet/overview
-     | Used by UI cards (CASH + DIAMONDS)
+     | FRONTEND SOURCE OF TRUTH
      ===================================================== */
     public function overview(MongoEconomyService $mongo): JsonResponse
     {
@@ -79,17 +48,12 @@ class AgentWalletController extends Controller
         $user    = auth()->user();
 
         /* ===============================
-        | 1. CASH (MYSQL)
+        | 1) CASH (MYSQL)
         =============================== */
-        $wallets = Wallet::where('owner_type', 'agent')
-            ->where('owner_id', $agentId)
-            ->get()
-            ->keyBy(fn ($w) => strtoupper($w->asset));
-
-        $cash = $wallets->get('PHP');
+        $cashWallet = $this->cashWallet($agentId);
 
         /* ===============================
-        | 2. COINS + DIAMONDS (MONGODB)
+        | 2) COINS + DIAMONDS (MONGODB)
         =============================== */
         $mongoWallet = null;
 
@@ -99,20 +63,24 @@ class AgentWalletController extends Controller
 
         return response()->json([
             'data' => [
-                'cash' => $cash ? [
+                'cash' => $cashWallet ? [
                     'asset'           => 'PHP',
-                    'available_cents' => $cash->available_cents,
-                    'reserved_cents'  => $cash->reserved_cents,
-                ] : null,
-
-                'diamonds' => [
-                    'asset'   => 'DIAMONDS',
-                    'balance' => $mongoWallet['wallet']['diamonds'] ?? 0,
+                    'available_cents' => (int) $cashWallet->available_cents,
+                    'reserved_cents'  => (int) $cashWallet->reserved_cents,
+                ] : [
+                    'asset'           => 'PHP',
+                    'available_cents' => 0,
+                    'reserved_cents'  => 0,
                 ],
 
                 'coins' => [
                     'asset'   => 'COINS',
-                    'balance' => $mongoWallet['wallet']['coins'] ?? 0,
+                    'balance' => (int) ($mongoWallet['wallet']['coins'] ?? 0),
+                ],
+
+                'diamonds' => [
+                    'asset'   => 'DIAMONDS',
+                    'balance' => (int) ($mongoWallet['wallet']['diamonds'] ?? 0),
                 ],
             ],
         ]);
@@ -120,85 +88,58 @@ class AgentWalletController extends Controller
 
     /* =====================================================
      | GET /agent/wallet/cash-summary
-     | CASH wallet only (used by recharge / withdrawal modals)
+     | Used by recharge / withdrawal modals
      ===================================================== */
     public function cashSummary(): JsonResponse
     {
         $agentId = $this->resolveAgentId();
         $wallet  = $this->cashWallet($agentId);
 
+        if (!$wallet) {
+            return response()->json([
+                'data' => [
+                    'asset'           => 'PHP',
+                    'available_cents' => 0,
+                    'reserved_cents'  => 0,
+                ],
+            ]);
+        }
+
         return response()->json([
             'data' => [
                 'asset'           => 'PHP',
-                'available_cents' => $wallet->available_cents,
-                'reserved_cents'  => $wallet->reserved_cents,
+                'available_cents' => (int) $wallet->available_cents,
+                'reserved_cents'  => (int) $wallet->reserved_cents,
             ],
         ]);
     }
 
-    /* =====================================================
-     | GET /agent/wallet/cash-ledger
-     | CASH ledger ONLY (DIAMONDS NEVER USE LEDGER)
-     ===================================================== */
-    public function cashLedger(Request $request): JsonResponse
-    {
-        $agentId = $this->resolveAgentId();
-        $wallet  = $this->cashWallet($agentId);
+public function coinsLedger(): JsonResponse
+{
+    $user = auth()->user();
 
-        $entries = LedgerEntry::where('wallet_id', $wallet->id)
-            ->latest()
-            ->limit(50)
-            ->get([
-                'id',
-                'event_type',
-                'direction',
-                'amount_cents',
-                'currency',
-                'meta',
-                'created_at',
-            ]);
-
-        return response()->json([
-            'data' => $entries,
-        ]);
+    if (!$user || !$user->mongo_user_id) {
+        abort(401, 'Unauthenticated.');
     }
 
-    /* =====================================================
-     | POST /agent/wallets/ensure-diamonds
-     | Idempotent DIAMONDS wallet creation
-     ===================================================== */
-    public function ensureDiamondsWallet(): JsonResponse
-    {
-        $agentId = $this->resolveAgentId();
-
-        $wallet = DB::transaction(function () use ($agentId) {
-            $existing = Wallet::where('owner_type', 'agent')
-                ->where('owner_id', $agentId)
-                ->whereRaw('UPPER(asset) = ?', ['DIAMONDS'])
-                ->lockForUpdate()
-                ->first();
-
-            if ($existing) {
-                return $existing;
-            }
-
-            return Wallet::create([
-                'user_id'         => $agentId,
-                'owner_type'      => 'agent',
-                'owner_id'        => $agentId,
-                'asset'           => 'DIAMONDS',
-                'available_cents' => 0,
-                'reserved_cents'  => 0,
-            ]);
-        });
-
-        return response()->json([
-            'data' => $wallet->only([
-                'id',
-                'asset',
-                'available_cents',
-                'reserved_cents',
-            ]),
+    $entries = LedgerEntry::query()
+        ->where('currency', 'Coins')
+        ->where('meta->mongo_user_id', $user->mongo_user_id)
+        ->latest()
+        ->limit(50)
+        ->get([
+            'id',
+            'event_type',
+            'direction',
+            'amount_cents',
+            'currency',
+            'meta',
+            'created_at',
         ]);
-    }
+
+    return response()->json([
+        'data' => $entries,
+    ]);
+}
+
 }

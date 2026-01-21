@@ -4,24 +4,16 @@ import axios from "axios";
 
 /* ================= HELPERS ================= */
 
-function formatPhp(cents) {
-  return `₱${(Number(cents || 0) / 100).toFixed(2)}`;
-}
-
-function formatDiamonds(amount) {
-  return Number(amount || 0).toLocaleString();
+function formatNumber(n) {
+  return Number(n || 0).toLocaleString();
 }
 
 function renderDirection(direction) {
-  if (direction === "credit") {
-    return (
-      <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-400">
-        CREDIT
-      </span>
-    );
-  }
-
-  return (
+  return direction === "credit" ? (
+    <span className="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold text-emerald-400">
+      CREDIT
+    </span>
+  ) : (
     <span className="rounded-md bg-rose-500/15 px-2 py-0.5 text-[11px] font-semibold text-rose-400">
       DEBIT
     </span>
@@ -50,30 +42,23 @@ function Card({ title, subtitle, children }) {
 
 export default function Wallet({ active }) {
   const [wallets, setWallets] = useState(null);
-  const [cashLedger, setCashLedger] = useState([]);
+  const [ledger, setLedger] = useState([]);
   const [loading, setLoading] = useState(true);
 
   async function load() {
     setLoading(true);
 
     try {
-      // ensure diamonds wallet exists (idempotent)
-      await axios.post(
-        "/agent/wallets/ensure-diamonds",
-        {},
-        { withCredentials: true }
-      );
-
-      const [overviewRes, ledgerRes] = await Promise.all([
+      const [walletRes, ledgerRes] = await Promise.all([
         axios.get("/agent/wallet/overview", { withCredentials: true }),
-        axios.get("/agent/wallet/cash-ledger", { withCredentials: true }),
+        axios.get("/agent/wallet/coins-ledger", { withCredentials: true }),
       ]);
 
-      setWallets(overviewRes.data?.data || null);
-      setCashLedger(ledgerRes.data?.data || []);
+      setWallets(walletRes.data?.data || null);
+      setLedger(ledgerRes.data?.data || []);
     } catch {
       setWallets(null);
-      setCashLedger([]);
+      setLedger([]);
     } finally {
       setLoading(false);
     }
@@ -83,60 +68,44 @@ export default function Wallet({ active }) {
     load();
   }, []);
 
-  const cash = wallets?.cash;
-  const diamonds = wallets?.diamonds;
   const coins = wallets?.coins;
+  const diamonds = wallets?.diamonds;
 
   return (
     <AdminLayout title="Agent Wallets" active={active}>
       {/* ================= WALLET CARDS ================= */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* CASH WALLET */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* COINS */}
         <Card
-          title="CASH WALLET (PHP)"
-          subtitle="Operational funds · Recharge & Withdrawals"
+          title="COINS WALLET"
+          subtitle="Recharge balance · Used to top up players"
         >
-          <div className="text-3xl font-semibold text-emerald-300">
-            {loading ? "—" : formatPhp(cash?.available_cents)}
+          <div className="text-3xl font-semibold text-yellow-300">
+            {loading ? "—" : formatNumber(coins?.balance)}
           </div>
           <div className="mt-1 text-[11px] text-white/50">
-            Reserved: {loading ? "—" : formatPhp(cash?.reserved_cents)}
+            Available coins
           </div>
         </Card>
 
-        {/* DIAMONDS WALLET */}
+        {/* DIAMONDS */}
         <Card
           title="DIAMONDS WALLET"
           subtitle="Commission · Game economy"
         >
           <div className="text-3xl font-semibold text-sky-300">
-            {loading ? "—" : formatDiamonds(diamonds?.balance)}
+            {loading ? "—" : formatNumber(diamonds?.balance)}
           </div>
           <div className="mt-1 text-[11px] text-white/50">
-            Reserved:{" "}
-            {loading ? "—" : formatDiamonds(diamonds?.reserved)}
-          </div>
-        </Card>
-
-        {/* COINS WALLET */}
-        <Card
-          title="COINS WALLET"
-          subtitle="Game rewards · Economy"
-        >
-          <div className="text-3xl font-semibold text-yellow-300">
-            {loading ? "—" : formatDiamonds(coins?.balance)}
-          </div>
-          <div className="mt-1 text-[11px] text-white/50">
-            Reserved:{" "}
-            {loading ? "—" : formatDiamonds(coins?.reserved)}
+            Available diamonds
           </div>
         </Card>
       </div>
 
-      {/* ================= CASH LEDGER ================= */}
+      {/* ================= COINS LEDGER ================= */}
       <div className="mt-6 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03]">
         <div className="px-4 py-3 text-[13px] font-semibold text-white/85">
-          Cash Ledger
+          Coins Ledger
         </div>
 
         <table className="min-w-full text-left text-[12px]">
@@ -163,15 +132,15 @@ export default function Wallet({ active }) {
               </tr>
             )}
 
-            {!loading && cashLedger.length === 0 && (
+            {!loading && ledger.length === 0 && (
               <tr>
                 <td colSpan={3} className="px-4 py-6 text-white/40">
-                  No cash ledger entries
+                  No ledger entries
                 </td>
               </tr>
             )}
 
-            {cashLedger.map((row) => (
+            {ledger.map((row) => (
               <tr key={row.id} className="bg-black/20">
                 <td className="px-4 py-3 text-white/85">
                   {row.event_type}
@@ -179,14 +148,21 @@ export default function Wallet({ active }) {
                 <td className="px-4 py-3">
                   {renderDirection(row.direction)}
                 </td>
-                <td className="px-4 py-3 text-white/85">
-                  {formatPhp(row.amount_cents)}
+                <td className="px-4 py-3 font-semibold text-yellow-300">
+                  {formatNumber(row.amount_cents)} Coins
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* ================= FALLBACK ================= */}
+      {!loading && !wallets && (
+        <div className="mt-6 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-[12px] text-white/60">
+          Wallet data unavailable.
+        </div>
+      )}
     </AdminLayout>
   );
 }
