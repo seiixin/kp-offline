@@ -381,4 +381,179 @@ public function getLoggedInAgentWallet(string $mongoUserId): ?array
         return null;
     }
 }
+
+    /* =====================================================
+     | DEBIT AGENT COINS
+     ===================================================== */
+public function debitCoins(string $mongoUserId, int $coins): void
+{
+    if ($coins <= 0) {
+        throw new RuntimeException('Coin amount must be greater than zero.');
+    }
+
+    // Convert to MongoDB ObjectId
+    $oid = new ObjectId($mongoUserId);
+
+    // Check if the user is an agent
+    $agent = $this->agencymembers()->findOne(['_id' => $oid]);
+
+    if ($agent) {
+        // Agent found, debit coins from the agent's wallet
+        $availableCoins = (int) ($agent['Coins'] ?? 0);
+
+        if ($availableCoins < $coins) {
+            throw new RuntimeException('Insufficient agent coin balance.');
+        }
+
+        // Decrease the agent's coin balance
+        $res = $this->agencymembers()->updateOne(
+            ['_id' => $oid],
+            ['$inc' => ['Coins' => -$coins]]  // Decrement the Coins field
+        );
+
+        if ($res->getModifiedCount() !== 1) {
+            throw new RuntimeException('Failed to debit agent\'s coins.');
+        }
+    } else {
+        // Check if the user is a player (in the 'users' collection)
+        $player = $this->players()->findOne(['_id' => $oid]);
+
+        if (!$player) {
+            throw new RuntimeException('Agent or player not found.');
+        }
+
+        // Credit coins to the player's wallet
+        $res = $this->players()->updateOne(
+            ['_id' => $oid],
+            ['$inc' => ['Coins' => $coins]]  // Increment the Coins field
+        );
+
+        if ($res->getModifiedCount() !== 1) {
+            throw new RuntimeException('Failed to credit player\'s coins.');
+        }
+    }
+}
+/* =====================================================
+ | AGENT LOOKUP BY MONGO ID
+ | USED BY OFFLINE RECHARGE (AGENT → PLAYER / AGENT)
+ ===================================================== */
+public function getAgentByMongoId(string $mongoUserId): ?array
+{
+    try {
+        $doc = $this->agencyMembers()->findOne(
+            ['_id' => $this->toObjectId($mongoUserId)],
+            [
+                'projection' => [
+                    'FullName'           => 1,
+                    'userIdentification' => 1,
+                    'Coins'              => 1,
+                    'Diamonds'           => 1,
+                    'role'               => 1,
+                ],
+            ]
+        );
+
+        if (!$doc) {
+            return null;
+        }
+
+        if ($doc instanceof BSONDocument) {
+            $doc = $doc->getArrayCopy();
+        }
+
+        return [
+            'mongo_user_id' => (string) $doc['_id'],
+            'name'          => $doc['FullName']
+                ?? $doc['userIdentification']
+                ?? 'Unknown Agent',
+            'role'          => $doc['role'] ?? 'agent',
+            'wallet'        => [
+                'coins'    => (int) ($doc['Coins'] ?? 0),
+                'diamonds' => (int) ($doc['Diamonds'] ?? 0),
+            ],
+            'type' => 'agent',
+        ];
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+/* =====================================================
+ | CREDIT PLAYER COINS (PLAYER-ONLY)
+ | USED BY OFFLINE RECHARGE
+ ===================================================== */
+public function creditCoinsToPlayer(array $payload): array
+{
+    $mongoUserId     = (string) ($payload['mongo_user_id'] ?? '');
+    $coins           = (int) ($payload['coins_amount'] ?? 0);
+    $idempotencyKey  = (string) ($payload['idempotency_key'] ?? '');
+    $source          = $payload['source'] ?? 'agent_top_up';
+
+    if ($mongoUserId === '' || $idempotencyKey === '') {
+        throw new \InvalidArgumentException('mongo_user_id and idempotency_key are required.');
+    }
+
+    if ($coins <= 0) {
+        return [
+            'transactionRef' => $idempotencyKey,
+            'status'         => 'successful',
+            'idempotent'     => true,
+        ];
+    }
+
+    // Idempotency check
+    $existing = $this->transactions()->findOne(
+        ['transactionRef' => $idempotencyKey],
+        ['projection' => ['status' => 1]]
+    );
+
+    if ($existing) {
+        return [
+            'transactionRef' => $idempotencyKey,
+            'status'         => $existing['status'] ?? 'successful',
+            'idempotent'     => true,
+        ];
+    }
+
+    $oid = $this->toObjectId($mongoUserId);
+
+    // Insert transaction
+    $txn = $this->transactions()->insertOne([
+        'transactionRef' => $idempotencyKey,
+        'userId'         => $oid,
+        'status'         => 'pending',
+        'coinsCredited'  => $coins,
+        'source'         => $source,
+        'targetType'     => 'player',
+        'createdAt'      => now()->toDateTimeString(),
+        'updatedAt'      => now()->toDateTimeString(),
+    ]);
+
+    // CREDIT PLAYER (users collection)
+    $res = $this->players()->updateOne(
+        ['_id' => $oid],
+        ['$inc' => ['Coins' => $coins]]
+    );
+
+    if ($res->getModifiedCount() !== 1) {
+        $this->transactions()->updateOne(
+            ['_id' => $txn->getInsertedId()],
+            ['$set' => ['status' => 'failed']]
+        );
+
+        throw new RuntimeException('Player not found or MongoDB update failed.');
+    }
+
+    // Mark success
+    $this->transactions()->updateOne(
+        ['_id' => $txn->getInsertedId()],
+        ['$set' => ['status' => 'successful']]
+    );
+
+    return [
+        'transactionRef' => $idempotencyKey,
+        'status'         => 'successful',
+        'idempotent'     => false,
+    ];
+}
+
 }

@@ -34,9 +34,9 @@ export default function NewOfflineRechargeModal({
   const [loadingUsers, setLoadingUsers] = useState(false);
 
   /* =========================
-     AGENT CASH WALLET (PHP)
+     AGENT COINS WALLET
   ========================= */
-  const [cashWallet, setCashWallet] = useState(null);
+  const [coinsWallet, setCoinsWallet] = useState(null);
   const [loadingWallet, setLoadingWallet] = useState(false);
 
   /* =========================
@@ -62,7 +62,7 @@ export default function NewOfflineRechargeModal({
   }, [open]);
 
   /* =========================
-     FETCH AGENT CASH WALLET
+     FETCH AGENT COINS WALLET
   ========================= */
   useEffect(() => {
     if (!open) return;
@@ -71,19 +71,14 @@ export default function NewOfflineRechargeModal({
     setLoadingWallet(true);
 
     axios
-      .get("/agent/wallets", { withCredentials: true })
+      .get("/agent/wallet/overview", { withCredentials: true })
       .then((res) => {
-        const list = Array.isArray(res.data)
-          ? res.data
-          : res.data?.data || [];
-
-        const phpWallet = list.find(
-          (w) => String(w.asset).toUpperCase() === "PHP"
-        );
-
-        if (alive) setCashWallet(phpWallet || null);
+        if (alive) {
+          const data = res.data.data;
+          setCoinsWallet(data?.coins || null);
+        }
       })
-      .catch(() => alive && setCashWallet(null))
+      .catch(() => alive && setCoinsWallet(null))
       .finally(() => alive && setLoadingWallet(false));
 
     return () => {
@@ -130,10 +125,10 @@ export default function NewOfflineRechargeModal({
 
   const phpValue = useMemo(() => usdValue * USD_TO_PHP, [usdValue]);
 
-  const hasEnoughCash = useMemo(() => {
-    if (!cashWallet) return false;
-    return phpValue * 100 <= Number(cashWallet.available_cents);
-  }, [phpValue, cashWallet]);
+  const hasEnoughCoins = useMemo(() => {
+    if (!coinsWallet) return false;
+    return coins <= Number(coinsWallet.balance);
+  }, [coins, coinsWallet]);
 
   /* =========================
      VALIDATION
@@ -142,7 +137,7 @@ export default function NewOfflineRechargeModal({
     String(form.mongo_user_id).length === 24 &&
     coins > 0 &&
     amountUsdCents > 0 &&
-    hasEnoughCash &&
+    hasEnoughCoins &&
     !!form.method;
 
   /* =========================
@@ -204,15 +199,13 @@ export default function NewOfflineRechargeModal({
         </div>
 
         <div className="mt-4 space-y-3">
-          {/* CASH WALLET */}
+          {/* COINS WALLET */}
           <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[12px] text-white">
             {loadingWallet
-              ? "Loading cash wallet…"
-              : cashWallet
-              ? `CASH (PHP) — ₱${(
-                  Number(cashWallet.available_cents) / 100
-                ).toLocaleString()}`
-              : "No cash wallet available"}
+              ? "Loading coins wallet…"
+              : coinsWallet
+              ? `COINS — ${coinsWallet.balance.toLocaleString()} coins`
+              : "No coins wallet available"}
           </div>
 
           {/* USER SEARCH */}
@@ -272,7 +265,7 @@ export default function NewOfflineRechargeModal({
               PHP deduction:&nbsp;
               <span
                 className={`font-semibold ${
-                  hasEnoughCash ? "text-emerald-400" : "text-red-400"
+                  hasEnoughCoins ? "text-emerald-400" : "text-red-400"
                 }`}
               >
                 ₱{phpValue.toFixed(2)}
@@ -280,9 +273,9 @@ export default function NewOfflineRechargeModal({
             </div>
           </div>
 
-          {!hasEnoughCash && (
+          {!hasEnoughCoins && (
             <div className="text-[11px] text-red-400">
-              Insufficient agent cash balance.
+              Insufficient agent coins balance.
             </div>
           )}
 
